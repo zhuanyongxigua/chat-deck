@@ -99,7 +99,7 @@ class AgentSidebar(VerticalScroll):
         self._cards: dict[str, AgentCard] = {}
         self._order: list[str] = []
         self._placeholder = Static(
-            "No agents yet.\n\nUse /new <codex|claude> <name> <cwd>\nor start with relay-deck --demo.",
+            "No agents yet.\n\nUse /new <codex|claude> <name> <cwd>\nor say: 创建一个 codex 会话在 /path/to/project",
             id="agent-sidebar-placeholder",
         )
 
@@ -149,4 +149,6 @@ class AgentSidebar(VerticalScroll):
             card.update_card(record, animation_tick=animation_tick, active=record.agent_id == active_agent_id)
 
     def on_click(self, event: events.Click) -> None:
+        if isinstance(getattr(event, "widget", None), AgentCard):
+            return
         self.post_message(self.BackgroundSelected())

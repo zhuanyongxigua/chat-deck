@@ -196,8 +196,10 @@ class RelayDeckApp(App[None]):
         self._write_system("Claude Code and Codex workers now run inside tmux sessions.")
         self._write_system("Toggle sidebar with B or Ctrl+B. Cmd+B depends on terminal key forwarding.")
         self._write_system("Click a sidebar card or use Ctrl/Cmd+1..9 to select an agent. Ctrl+T opens its tmux session.")
+        self._write_system("When an agent is selected, plain input goes to that agent. Press Esc to return to controller.")
         if self.demo:
             await self._bootstrap_demo()
+        self._render_main_log()
         self._refresh_all()
 
     async def on_unmount(self) -> None:
@@ -219,14 +221,21 @@ class RelayDeckApp(App[None]):
         if not raw.strip():
             self._focus_input()
             return
-        self._write_user(raw)
-        result = self.orchestrator.router.parse(raw)
-        if result.kind == "attach_agent":
-            await self._handle_attach_request(result.target)
+        if self._selected_agent_id is not None and not raw.startswith("/") and not raw.startswith("@"):
+            await self._send_to_selected_agent(raw)
         else:
-            response = await self.orchestrator.dispatch(result)
-            if response:
-                self._write_system(response)
+            self._write_user(raw)
+            result = self.orchestrator.router.parse(raw)
+            if result.kind == "attach_agent":
+                await self._handle_attach_request(result.target)
+            else:
+                response = await self.orchestrator.dispatch(result)
+                if response:
+                    self._write_system(response)
+                if result.kind == "create_agent" and result.name:
+                    record = self.orchestrator.registry.get_by_name(result.name)
+                    if record is not None:
+                        self._select_agent(record.agent_id)
         self._refresh_all()
         self._focus_input()
 
@@ -253,6 +262,7 @@ class RelayDeckApp(App[None]):
             return
         self._selected_agent_id = None
         self._selected_snapshot = []
+        self._render_main_log()
         self._refresh_all()
         self._focus_input()
 
@@ -288,6 +298,7 @@ class RelayDeckApp(App[None]):
         if self._selected_agent_id is not None and self.orchestrator.registry.get(self._selected_agent_id) is None:
             self._selected_agent_id = None
             self._selected_snapshot = []
+            self._render_main_log()
         self.query_one(StatusBar).set_records(records, self._animation_tick)
         self.query_one(AgentSidebar).set_records(records, self._animation_tick, self._selected_agent_id)
         self._update_workspace_header()
@@ -296,11 +307,13 @@ class RelayDeckApp(App[None]):
 
     def _write_user(self, text: str) -> None:
         self._controller_history.append((f"> {text}", "bold cyan"))
-        self.query_one(RichLog).write(Text(f"> {text}", style="bold cyan"))
+        if self._selected_agent_id is None:
+            self.query_one(RichLog).write(Text(f"> {text}", style="bold cyan"))
 
     def _write_system(self, text: str) -> None:
         self._controller_history.append((text, "white"))
-        self.query_one(RichLog).write(Text(text, style="white"))
+        if self._selected_agent_id is None:
+            self.query_one(RichLog).write(Text(text, style="white"))
 
     def _handle_event(self, event: AgentEvent) -> None:
         if event.type == EventType.CONTROLLER:
@@ -310,7 +323,11 @@ class RelayDeckApp(App[None]):
         style = self._style_for_event(event)
         line = f"[{label}] {event.type.value}: {event.message}"
         self._controller_history.append((line, style))
-        self.query_one(RichLog).write(Text(line, style=style))
+        if self._selected_agent_id is None:
+            self.query_one(RichLog).write(Text(line, style=style))
+            return
+        if event.agent_id == self._selected_agent_id:
+            self._render_main_log()
 
     def _style_for_event(self, event: AgentEvent) -> str:
         if event.type == EventType.ERROR or event.state == AgentState.ERROR:
@@ -335,6 +352,7 @@ class RelayDeckApp(App[None]):
         self._selected_agent_id = agent_id
         self._selected_snapshot = []
         self.orchestrator.registry.mark_read(agent_id)
+        self._render_main_log()
         self._refresh_all()
         self._focus_input()
 
@@ -348,7 +366,7 @@ class RelayDeckApp(App[None]):
             header.update("Controller")
             return
         header.update(
-            f"Controller  Selected @{record.name}  {record.tool_type.client_label}  {record.state.value}  Ctrl+T or /attach"
+            f"@{record.name}  {record.tool_type.client_label}  {record.state.value}  Esc returns to controller  Ctrl+T opens tmux"
         )
 
     def _update_detail_panel(self) -> None:
@@ -383,6 +401,56 @@ class RelayDeckApp(App[None]):
 
     def _focus_input(self) -> None:
         self.query_one(Input).focus()
+        self._update_input_placeholder()
+
+    def _update_input_placeholder(self) -> None:
+        input_widget = self.query_one(Input)
+        if self._selected_agent_id is None:
+            input_widget.placeholder = "Ask controller, create agents naturally, or use /new /attach @agent-name ..."
+            return
+        record = self.orchestrator.registry.get(self._selected_agent_id)
+        if record is None:
+            input_widget.placeholder = "Ask controller, create agents naturally, or use /new /attach @agent-name ..."
+            return
+        input_widget.placeholder = f"Message @{record.name} directly, or press Esc to return to controller"
+
+    def _render_main_log(self) -> None:
+        log = self.query_one(RichLog)
+        log.clear()
+        if self._selected_agent_id is None:
+            for text, style in self._controller_history:
+                log.write(Text(text, style=style))
+            self._update_input_placeholder()
+            return
+        record = self.orchestrator.registry.get(self._selected_agent_id)
+        if record is None:
+            self._selected_agent_id = None
+            for text, style in self._controller_history:
+                log.write(Text(text, style=style))
+            self._update_input_placeholder()
+            return
+        if not record.transcript:
+            log.write(Text(f"@{record.name} selected. Waiting for transcript...", style="dim"))
+        else:
+            for line in record.transcript:
+                log.write(Text(line.text, style=line.style))
+        self._update_input_placeholder()
+
+    async def _send_to_selected_agent(self, text: str) -> None:
+        if self._selected_agent_id is None:
+            return
+        record = self.orchestrator.registry.get(self._selected_agent_id)
+        if record is None:
+            self._write_system("Selected agent is no longer available")
+            self._selected_agent_id = None
+            self._render_main_log()
+            return
+        response = await self.orchestrator.send_to_agent(record.name, text)
+        if response.startswith("Unknown agent") or response.endswith("is not attached"):
+            self._write_system(response)
+            self._selected_agent_id = None
+            self._render_main_log()
+            return
 
     async def _handle_attach_request(self, target: str | None) -> None:
         if target:
@@ -392,6 +460,7 @@ class RelayDeckApp(App[None]):
                 self._write_system(response)
                 return
             self._write_system(f"Returned from tmux session @{target}")
+            self._render_main_log()
             return
         await self._attach_selected_session()
 
@@ -411,3 +480,4 @@ class RelayDeckApp(App[None]):
             self._write_system(response)
             return
         self._write_system(f"Returned from tmux session @{record.name}")
+        self._render_main_log()

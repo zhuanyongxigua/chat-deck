@@ -10,6 +10,7 @@ from pathlib import Path
 
 from relay_deck.adapters import ClaudeCodeAdapter, CodexAdapter, MockAdapter
 from relay_deck.adapters.base import AgentAdapter
+from relay_deck.controller import ControllerInterpreter
 from relay_deck.events import EventBus
 from relay_deck.models import AgentEvent, AgentSpec, AgentState, EventType, ToolType
 from relay_deck.registry import AgentRegistry
@@ -23,6 +24,7 @@ class Orchestrator:
         self.registry = AgentRegistry()
         self.bus = EventBus()
         self.router = InputRouter()
+        self.controller = ControllerInterpreter()
         self.tmux = tmux or TmuxManager()
         self.runtime = RuntimeEventInbox(runtime_dir or Path(tempfile.mkdtemp(prefix="relay-deck-")))
         self._adapters: dict[str, AgentAdapter] = {}
@@ -48,6 +50,9 @@ class Orchestrator:
         await self.start()
         if spec.tool_type in {ToolType.CLAUDE, ToolType.CODEX} and not await self.tmux.is_available():
             raise RuntimeError("tmux is required for Claude Code and Codex workers")
+        existing = self.registry.get_by_name(spec.name)
+        if existing is not None:
+            raise RuntimeError(f"Agent name already exists: {spec.name}")
         agent_id = spec.agent_id or str(uuid.uuid4())[:8]
         spec.agent_id = agent_id
         self._prepare_launch_command(spec)
@@ -181,9 +186,13 @@ class Orchestrator:
                 return f"Usage: @{result.target} <message>"
             return await self.send_to_agent(result.target, result.message)
         if result.kind == "controller_message":
+            interpreted = self.controller.interpret(result.message or "")
+            if interpreted is not None:
+                return await self._dispatch(interpreted)
             return (
                 "Plain controller chat is not wired to a primary LLM yet. "
-                "Use /new to start agents or @agent-name to route work."
+                "You can still create agents with natural language if the message clearly names a client and directory, "
+                "or use /new and @agent-name."
             )
         return "Unhandled input"
 
