@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
+import shutil
 import sys
 from pathlib import Path
 
@@ -42,6 +44,44 @@ def _handle_report(args: argparse.Namespace) -> None:
     inbox.write_report(report)
 
 
+def _read_os_release() -> str:
+    path = Path("/etc/os-release")
+    if not path.exists():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _tmux_install_hint(*, system_name: str | None = None, os_release_text: str | None = None) -> str:
+    normalized_system = (system_name or platform.system()).strip().lower()
+    release = (os_release_text or _read_os_release()).lower()
+    if normalized_system == "darwin":
+        return "Install tmux first: brew install tmux"
+    if normalized_system == "linux":
+        if "ubuntu" in release or "debian" in release:
+            return "Install tmux first: sudo apt install tmux"
+        if "fedora" in release or "rhel" in release or "centos" in release:
+            return "Install tmux first: sudo dnf install tmux"
+        if "arch" in release:
+            return "Install tmux first: sudo pacman -S tmux"
+        return "Install tmux with your distro package manager and make sure it is on PATH."
+    return "Install tmux and make sure it is on PATH."
+
+
+def _ensure_tmux_available(*, demo: bool, which=shutil.which) -> None:
+    if demo:
+        return
+    if which("tmux"):
+        return
+    raise SystemExit(
+        "tmux is required to run Relay Deck outside demo mode.\n"
+        f"{_tmux_install_hint()}\n"
+        "Use `relay-deck --demo` if you only want to preview the UI.\n"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Relay Deck TUI")
     subparsers = parser.add_subparsers(dest="subcommand")
@@ -66,6 +106,7 @@ def main() -> None:
     if args.subcommand == "report":
         _handle_report(args)
         return
+    _ensure_tmux_available(demo=args.demo)
     try:
         from relay_deck.app import RelayDeckApp
     except ModuleNotFoundError as exc:

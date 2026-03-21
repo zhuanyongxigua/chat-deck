@@ -19,6 +19,12 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+Relay Deck depends on `tmux` for real Claude Code and Codex worker sessions. Install it separately before launching the app normally:
+
+```bash
+brew install tmux
+```
+
 ## Run
 
 ```bash
