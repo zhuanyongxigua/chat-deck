@@ -43,6 +43,19 @@ class RegistryTests(unittest.TestCase):
         assert record is not None
         self.assertEqual(record.transcript[-1].text, "streaming output")
 
+    def test_started_event_persists_tmux_session_name(self) -> None:
+        self.registry.apply_event(
+            AgentEvent(
+                type=EventType.STARTED,
+                agent_id="abc123",
+                message="tmux session ready",
+                payload={"session_name": "relay-codex-api-agent-abc123"},
+            )
+        )
+        record = self.registry.get("abc123")
+        assert record is not None
+        self.assertEqual(record.session_name, "relay-codex-api-agent-abc123")
+
     def test_apply_state_change_marks_attention(self) -> None:
         self.registry.apply_event(
             AgentEvent(

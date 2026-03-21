@@ -117,6 +117,8 @@ class AgentRegistry:
 
         if event.payload.get("branch"):
             record.branch = str(event.payload["branch"])
+        if event.payload.get("session_name"):
+            record.session_name = str(event.payload["session_name"])
 
     def status_bar_text(self) -> str:
         records = self.list()

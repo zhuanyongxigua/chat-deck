@@ -139,6 +139,7 @@ class AgentRecord:
     name: str
     tool_type: ToolType
     cwd: Path
+    session_name: str | None = None
     display_name: str = ""
     branch: str | None = None
     state: AgentState = AgentState.IDLE
