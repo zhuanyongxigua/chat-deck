@@ -25,7 +25,7 @@ class AgentCard(Static):
         self.record = record
         self.animation_tick = animation_tick
         self.active = active
-        self.can_focus = True
+        self.can_focus = False
         self._refresh_content()
 
     def update_card(self, record: AgentRecord, *, animation_tick: int, active: bool) -> None:

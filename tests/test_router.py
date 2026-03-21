@@ -22,6 +22,11 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(result.name, "api-agent")
         self.assertEqual(result.cwd, Path("~/work/api").expanduser())
 
+    def test_parse_attach_command(self) -> None:
+        result = self.router.parse("/attach @api-agent")
+        self.assertEqual(result.kind, "attach_agent")
+        self.assertEqual(result.target, "api-agent")
+
     def test_invalid_command(self) -> None:
         result = self.router.parse("/unknown")
         self.assertEqual(result.kind, "invalid")

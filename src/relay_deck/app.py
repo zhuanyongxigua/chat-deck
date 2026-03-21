@@ -125,16 +125,17 @@ class RelayDeckApp(App[None]):
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("super+b,ctrl+b,b", "toggle_sidebar", "Toggle Sidebar"),
-        ("super+0,ctrl+0,escape", "detach_agent", "Controller"),
-        ("super+1,ctrl+1", "attach_agent_slot(1)", "Agent 1"),
-        ("super+2,ctrl+2", "attach_agent_slot(2)", "Agent 2"),
-        ("super+3,ctrl+3", "attach_agent_slot(3)", "Agent 3"),
-        ("super+4,ctrl+4", "attach_agent_slot(4)", "Agent 4"),
-        ("super+5,ctrl+5", "attach_agent_slot(5)", "Agent 5"),
-        ("super+6,ctrl+6", "attach_agent_slot(6)", "Agent 6"),
-        ("super+7,ctrl+7", "attach_agent_slot(7)", "Agent 7"),
-        ("super+8,ctrl+8", "attach_agent_slot(8)", "Agent 8"),
-        ("super+9,ctrl+9", "attach_agent_slot(9)", "Agent 9"),
+        ("super+0,ctrl+0,escape", "clear_selection", "Controller"),
+        ("super+1,ctrl+1", "select_agent_slot(1)", "Select Agent 1"),
+        ("super+2,ctrl+2", "select_agent_slot(2)", "Select Agent 2"),
+        ("super+3,ctrl+3", "select_agent_slot(3)", "Select Agent 3"),
+        ("super+4,ctrl+4", "select_agent_slot(4)", "Select Agent 4"),
+        ("super+5,ctrl+5", "select_agent_slot(5)", "Select Agent 5"),
+        ("super+6,ctrl+6", "select_agent_slot(6)", "Select Agent 6"),
+        ("super+7,ctrl+7", "select_agent_slot(7)", "Select Agent 7"),
+        ("super+8,ctrl+8", "select_agent_slot(8)", "Select Agent 8"),
+        ("super+9,ctrl+9", "select_agent_slot(9)", "Select Agent 9"),
+        ("ctrl+t", "attach_selected_session", "Attach tmux"),
         ("ctrl+l", "refresh_views", "Refresh"),
     ]
 
@@ -149,7 +150,7 @@ class RelayDeckApp(App[None]):
         self._event_task: asyncio.Task[None] | None = None
         self._animation_tick = 0
         self._sidebar_visible = True
-        self._active_agent_id: str | None = None
+        self._selected_agent_id: str | None = None
         self._controller_history: list[tuple[str, str]] = []
 
     def compose(self) -> ComposeResult:
@@ -163,22 +164,23 @@ class RelayDeckApp(App[None]):
             with Horizontal(id="input-row"):
                 yield Static(">", id="input-prompt")
                 yield Input(
-                    placeholder="Type /new ... or @agent-name ...",
+                    placeholder="Type /new, /attach or @agent-name ...",
                     id="command-input",
                     compact=True,
                 )
 
     async def on_mount(self) -> None:
-        self.query_one(Input).focus()
+        self._focus_input()
         self._event_queue = await self.orchestrator.bus.subscribe()
         self._event_task = asyncio.create_task(self._consume_events())
         self.set_interval(0.2, self._advance_animation)
         self._write_system(
-            "Commands: /help, /agents, /new <codex|claude> <name> <cwd>, @agent-name <message>"
+            "Commands: /help, /agents, /new <codex|claude> <name> <cwd>, /attach [agent-name], @agent-name <message>"
         )
         self._write_system("The sidebar keeps all agent status visible without opening extra panes.")
+        self._write_system("Claude Code and Codex workers now run inside tmux sessions.")
         self._write_system("Toggle sidebar with B or Ctrl+B. Cmd+B depends on terminal key forwarding.")
-        self._write_system("Click a sidebar card or use Ctrl/Cmd+1..9 to attach to an agent session.")
+        self._write_system("Click a sidebar card or use Ctrl/Cmd+1..9 to select an agent. Ctrl+T opens its tmux session.")
         if self.demo:
             await self._bootstrap_demo()
         self._refresh_all()
@@ -195,14 +197,19 @@ class RelayDeckApp(App[None]):
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         raw = event.value
         self.query_one(Input).value = ""
-        if self._active_agent_id is not None:
-            await self._send_to_active_agent(raw)
+        if not raw.strip():
+            self._focus_input()
+            return
+        self._write_user(raw)
+        result = self.orchestrator.router.parse(raw)
+        if result.kind == "attach_agent":
+            await self._handle_attach_request(result.target)
         else:
-            self._write_user(raw)
-            response = await self.orchestrator.handle_input(raw)
+            response = await self.orchestrator.dispatch(result)
             if response:
                 self._write_system(response)
         self._refresh_all()
+        self._focus_input()
 
     async def action_refresh_views(self) -> None:
         self._refresh_all()
@@ -213,28 +220,30 @@ class RelayDeckApp(App[None]):
         self.query_one(AgentSidebar).display = self._sidebar_visible
         self._write_system("Sidebar shown" if self._sidebar_visible else "Sidebar hidden")
         self._refresh_all()
+        self._focus_input()
 
-    async def action_attach_agent_slot(self, slot: int) -> None:
+    async def action_select_agent_slot(self, slot: int) -> None:
         record = self.orchestrator.registry.get_by_index(slot - 1)
         if record is None:
             self._write_system(f"No agent mapped to slot {slot}")
             return
-        self._attach_agent(record.agent_id)
+        self._select_agent(record.agent_id)
 
-    async def action_detach_agent(self) -> None:
-        if self._active_agent_id is None:
+    async def action_clear_selection(self) -> None:
+        if self._selected_agent_id is None:
             return
-        self._active_agent_id = None
-        self.query_one(Input).placeholder = "Type /new ... or @agent-name ..."
-        self._write_system("Returned to controller view")
-        self._render_workspace()
+        self._selected_agent_id = None
         self._refresh_all()
+        self._focus_input()
+
+    async def action_attach_selected_session(self) -> None:
+        await self._attach_selected_session()
 
     async def on_agent_card_selected(self, event: AgentCard.Selected) -> None:
-        self._attach_agent(event.agent_id)
+        self._select_agent(event.agent_id)
 
     async def on_agent_sidebar_background_selected(self, event: AgentSidebar.BackgroundSelected) -> None:
-        await self.action_detach_agent()
+        await self.action_clear_selection()
 
     async def _consume_events(self) -> None:
         assert self._event_queue is not None
@@ -256,42 +265,29 @@ class RelayDeckApp(App[None]):
 
     def _refresh_all(self) -> None:
         records = self.orchestrator.registry.list()
+        if self._selected_agent_id is not None and self.orchestrator.registry.get(self._selected_agent_id) is None:
+            self._selected_agent_id = None
         self.query_one(StatusBar).set_records(records, self._animation_tick)
-        self.query_one(AgentSidebar).set_records(records, self._animation_tick, self._active_agent_id)
+        self.query_one(AgentSidebar).set_records(records, self._animation_tick, self._selected_agent_id)
         self._update_workspace_header()
 
     def _write_user(self, text: str) -> None:
         self._controller_history.append((f"> {text}", "bold cyan"))
-        if self._active_agent_id is None:
-            self.query_one(RichLog).write(Text(f"> {text}", style="bold cyan"))
+        self.query_one(RichLog).write(Text(f"> {text}", style="bold cyan"))
 
     def _write_system(self, text: str) -> None:
         self._controller_history.append((text, "white"))
-        if self._active_agent_id is None:
-            self.query_one(RichLog).write(Text(text, style="white"))
+        self.query_one(RichLog).write(Text(text, style="white"))
 
     def _handle_event(self, event: AgentEvent) -> None:
         if event.type == EventType.CONTROLLER:
             self._write_system(event.message)
             return
-        if self._active_agent_id is None:
-            label = event.agent_id or "system"
-            style = self._style_for_event(event)
-            line = f"[{label}] {event.type.value}: {event.message}"
-            self._controller_history.append((line, style))
-            self.query_one(RichLog).write(Text(line, style=style))
-            return
-
-        if event.agent_id == self._active_agent_id:
-            self.orchestrator.registry.mark_read(self._active_agent_id)
-            if event.type in {
-                EventType.MESSAGE_SENT,
-                EventType.OUTPUT,
-                EventType.ERROR,
-                EventType.COMPLETED,
-                EventType.STARTED,
-            }:
-                self._append_active_agent_line(event)
+        label = event.agent_id or "system"
+        style = self._style_for_event(event)
+        line = f"[{label}] {event.type.value}: {event.message}"
+        self._controller_history.append((line, style))
+        self.query_one(RichLog).write(Text(line, style=style))
 
     def _style_for_event(self, event: AgentEvent) -> str:
         if event.type == EventType.ERROR or event.state == AgentState.ERROR:
@@ -308,63 +304,56 @@ class RelayDeckApp(App[None]):
         self._animation_tick += 1
         self._refresh_all()
 
-    async def _send_to_active_agent(self, raw: str) -> None:
-        if not raw.strip():
-            return
-        record = self.orchestrator.registry.get(self._active_agent_id) if self._active_agent_id else None
-        if record is None:
-            self._write_system("Active agent is no longer available")
-            self._active_agent_id = None
-            self._render_workspace()
-            return
-        response = await self.orchestrator.send_to_agent(record.name, raw)
-        if not response.startswith(f"Sent to @{record.name}:"):
-            self._write_system(response)
-
-    def _attach_agent(self, agent_id: str) -> None:
+    def _select_agent(self, agent_id: str) -> None:
         record = self.orchestrator.registry.get(agent_id)
         if record is None:
             self._write_system("Selected agent is no longer available")
             return
-        self._active_agent_id = agent_id
+        self._selected_agent_id = agent_id
         self.orchestrator.registry.mark_read(agent_id)
-        self.query_one(Input).placeholder = f"Attached to @{record.name}. Enter sends input directly. Esc detaches."
-        self._render_workspace()
         self._refresh_all()
-
-    def _render_workspace(self) -> None:
-        log = self.query_one(RichLog)
-        log.clear()
-
-        if self._active_agent_id is None:
-            for line, style in self._controller_history:
-                log.write(Text(line, style=style), scroll_end=False)
-            return
-
-        record = self.orchestrator.registry.get(self._active_agent_id)
-        if record is None:
-            self._active_agent_id = None
-            self._render_workspace()
-            return
-        for line in record.transcript:
-            log.write(Text(line.text, style=line.style), scroll_end=False)
+        self._focus_input()
 
     def _update_workspace_header(self) -> None:
         header = self.query_one("#workspace-header", Static)
-        if self._active_agent_id is None:
+        if self._selected_agent_id is None:
             header.update("Controller")
             return
-        record = self.orchestrator.registry.get(self._active_agent_id)
+        record = self.orchestrator.registry.get(self._selected_agent_id)
         if record is None:
             header.update("Controller")
             return
         header.update(
-            f"Attached to @{record.name}  {record.tool_type.client_label}  {record.cwd}  Esc to detach"
+            f"Controller  Selected @{record.name}  {record.tool_type.client_label}  Ctrl+T or /attach"
         )
 
-    def _append_active_agent_line(self, event: AgentEvent) -> None:
-        record = self.orchestrator.registry.get(self._active_agent_id) if self._active_agent_id else None
-        if record is None or not record.transcript:
+    def _focus_input(self) -> None:
+        self.query_one(Input).focus()
+
+    async def _handle_attach_request(self, target: str | None) -> None:
+        if target:
+            with self.suspend():
+                response = await self.orchestrator.attach_agent_session(target)
+            if response:
+                self._write_system(response)
+                return
+            self._write_system(f"Returned from tmux session @{target}")
             return
-        line = record.transcript[-1]
-        self.query_one(RichLog).write(Text(line.text, style=line.style))
+        await self._attach_selected_session()
+
+    async def _attach_selected_session(self) -> None:
+        if self._selected_agent_id is None:
+            self._write_system("No agent selected. Click a card or use Ctrl/Cmd+1..9 first.")
+            return
+        record = self.orchestrator.registry.get(self._selected_agent_id)
+        if record is None:
+            self._write_system("Selected agent is no longer available")
+            self._selected_agent_id = None
+            self._refresh_all()
+            return
+        with self.suspend():
+            response = await self.orchestrator.attach_agent_session_by_id(record.agent_id)
+        if response:
+            self._write_system(response)
+            return
+        self._write_system(f"Returned from tmux session @{record.name}")

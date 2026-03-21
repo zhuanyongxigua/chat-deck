@@ -51,6 +51,13 @@ class InputRouter:
             return RouterResult(kind="help")
         if command == "/agents":
             return RouterResult(kind="agents")
+        if command == "/attach":
+            if len(parts) > 2:
+                return RouterResult(kind="invalid", message="Usage: /attach [agent-name]")
+            target = parts[1] if len(parts) == 2 else None
+            if target and target.startswith("@"):
+                target = target[1:]
+            return RouterResult(kind="attach_agent", target=target or None)
         if command == "/new":
             if len(parts) < 4:
                 return RouterResult(kind="invalid", message="Usage: /new <codex|claude> <name> <cwd>")
