@@ -1,25 +1,37 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
+import sys
+import tempfile
 import uuid
 from pathlib import Path
 
 from relay_deck.adapters import ClaudeCodeAdapter, CodexAdapter, MockAdapter
 from relay_deck.adapters.base import AgentAdapter
 from relay_deck.events import EventBus
-from relay_deck.models import AgentEvent, AgentSpec, EventType, ToolType
+from relay_deck.models import AgentEvent, AgentSpec, AgentState, EventType, ToolType
 from relay_deck.registry import AgentRegistry
+from relay_deck.runtime_events import RuntimeEventInbox, WorkerReport, build_report_command
 from relay_deck.router import InputRouter, RouterResult
 from relay_deck.tmux_manager import TmuxCommandError, TmuxManager, TmuxUnavailableError
 
 
 class Orchestrator:
-    def __init__(self, tmux: TmuxManager | None = None) -> None:
+    def __init__(self, tmux: TmuxManager | None = None, runtime_dir: Path | None = None) -> None:
         self.registry = AgentRegistry()
         self.bus = EventBus()
         self.router = InputRouter()
         self.tmux = tmux or TmuxManager()
+        self.runtime = RuntimeEventInbox(runtime_dir or Path(tempfile.mkdtemp(prefix="relay-deck-")))
         self._adapters: dict[str, AgentAdapter] = {}
+        self._runtime_task: asyncio.Task[None] | None = None
+
+    async def start(self) -> None:
+        self.runtime.ensure()
+        if self._runtime_task is None:
+            self._runtime_task = asyncio.create_task(self._consume_runtime_reports())
 
     async def handle_input(self, raw: str) -> str:
         result = self.router.parse(raw)
@@ -33,10 +45,12 @@ class Orchestrator:
         await self.bus.publish(event)
 
     async def create_agent(self, spec: AgentSpec) -> str:
+        await self.start()
         if spec.tool_type in {ToolType.CLAUDE, ToolType.CODEX} and not await self.tmux.is_available():
             raise RuntimeError("tmux is required for Claude Code and Codex workers")
         agent_id = spec.agent_id or str(uuid.uuid4())[:8]
         spec.agent_id = agent_id
+        self._prepare_launch_command(spec)
         branch = await self._detect_git_branch(spec.cwd)
         self.registry.register(
             agent_id=agent_id,
@@ -93,7 +107,17 @@ class Orchestrator:
         return ""
 
     async def shutdown(self) -> None:
+        if self._runtime_task is not None:
+            self._runtime_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._runtime_task
         await asyncio.gather(*(adapter.stop() for adapter in self._adapters.values()), return_exceptions=True)
+
+    async def poll_runtime_reports_once(self) -> int:
+        reports = self.runtime.drain()
+        for report in reports:
+            await self._apply_worker_report(report)
+        return len(reports)
 
     async def _dispatch(self, result: RouterResult) -> str:
         if result.kind == "empty":
@@ -146,6 +170,11 @@ class Orchestrator:
             )
         return "Unhandled input"
 
+    async def _consume_runtime_reports(self) -> None:
+        while True:
+            await self.poll_runtime_reports_once()
+            await asyncio.sleep(0.2)
+
     def _make_adapter(self, spec: AgentSpec) -> AgentAdapter:
         if spec.tool_type == ToolType.CLAUDE:
             return ClaudeCodeAdapter(spec, self.emit, self.tmux)
@@ -174,3 +203,220 @@ class Orchestrator:
             return None
         branch = stdout.decode().strip()
         return branch or None
+
+    def _prepare_launch_command(self, spec: AgentSpec) -> None:
+        if spec.launch_command is not None:
+            return
+        if spec.tool_type == ToolType.CLAUDE:
+            spec.launch_command = self._build_claude_command(spec)
+        elif spec.tool_type == ToolType.CODEX:
+            spec.launch_command = ["codex"]
+
+    def _build_claude_command(self, spec: AgentSpec) -> list[str]:
+        settings_path = self._write_claude_settings(spec)
+        return ["claude", "--settings", str(settings_path)]
+
+    def _write_claude_settings(self, spec: AgentSpec) -> Path:
+        assert spec.agent_id is not None
+        agent_dir = self.runtime.agent_dir(spec.agent_id)
+        settings_path = agent_dir / "claude-settings.json"
+        hooks = {}
+        for event_name in ("Notification", "PermissionRequest", "Stop", "SessionEnd"):
+            hooks[event_name] = [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": build_report_command(
+                                python_executable=sys.executable,
+                                runtime_dir=self.runtime.runtime_dir,
+                                agent_id=spec.agent_id,
+                                source="claude",
+                                event_name=event_name,
+                            ),
+                            "timeout": 10,
+                        }
+                    ]
+                }
+            ]
+        settings_path.write_text(json.dumps({"hooks": hooks}, indent=2), encoding="utf-8")
+        return settings_path
+
+    async def _apply_worker_report(self, report: WorkerReport) -> None:
+        if self.registry.get(report.agent_id) is None:
+            return
+        if report.summary:
+            await self.emit(
+                AgentEvent(
+                    type=EventType.SUMMARY_UPDATED,
+                    agent_id=report.agent_id,
+                    message=report.summary,
+                    payload={
+                        "report_source": report.source,
+                        "report_event": report.event_name,
+                    },
+                )
+            )
+        if report.source == "claude":
+            await self._apply_claude_report(report)
+            return
+        if report.source == "codex":
+            await self._apply_codex_report(report)
+            return
+        await self._apply_generic_report(report)
+
+    async def _apply_generic_report(self, report: WorkerReport) -> None:
+        state = self._parse_state(report.state)
+        message = report.message or f"{report.source} reported {report.event_name}"
+        await self._emit_state_event(
+            agent_id=report.agent_id,
+            state=state,
+            message=message,
+            payload={
+                "report_source": report.source,
+                "report_event": report.event_name,
+                "report_payload": report.payload,
+            },
+        )
+
+    async def _apply_claude_report(self, report: WorkerReport) -> None:
+        payload = report.payload
+        event_name = report.event_name
+        if event_name == "Notification":
+            parts = [payload.get("title"), payload.get("message"), payload.get("notification_type")]
+            message = " | ".join(str(part) for part in parts if part) or report.message or "Claude is waiting"
+            await self._emit_state_event(
+                agent_id=report.agent_id,
+                state=AgentState.WAITING,
+                message=message,
+                payload={"report_source": report.source, "report_event": event_name, "report_payload": payload},
+            )
+            return
+        if event_name == "PermissionRequest":
+            tool_name = payload.get("tool_name")
+            message = "Claude is waiting for permission"
+            if tool_name:
+                message = f"{message}: {tool_name}"
+            await self._emit_state_event(
+                agent_id=report.agent_id,
+                state=AgentState.WAITING,
+                message=report.message or message,
+                payload={"report_source": report.source, "report_event": event_name, "report_payload": payload},
+            )
+            return
+        if event_name == "Stop":
+            await self._emit_state_event(
+                agent_id=report.agent_id,
+                state=AgentState.COMPLETED,
+                message=report.message or "Claude completed its current turn",
+                payload={"report_source": report.source, "report_event": event_name, "report_payload": payload},
+            )
+            return
+        if event_name == "SessionEnd":
+            reason = str(payload.get("reason") or report.message or "Claude session ended")
+            state = AgentState.ERROR if "error" in reason.lower() or "fail" in reason.lower() else AgentState.IDLE
+            await self._emit_state_event(
+                agent_id=report.agent_id,
+                state=state,
+                message=reason,
+                payload={"report_source": report.source, "report_event": event_name, "report_payload": payload},
+            )
+            return
+        await self._apply_generic_report(report)
+
+    async def _apply_codex_report(self, report: WorkerReport) -> None:
+        payload = report.payload
+        event_name = report.event_name
+        if event_name == "thread/status/changed":
+            status = payload.get("status")
+            state, message = self._map_codex_thread_status(status)
+            await self._emit_state_event(
+                agent_id=report.agent_id,
+                state=state,
+                message=report.message or message,
+                payload={"report_source": report.source, "report_event": event_name, "report_payload": payload},
+            )
+            return
+        if event_name in {"turn/completed", "agent-turn-complete", "turn_completed"}:
+            await self._emit_state_event(
+                agent_id=report.agent_id,
+                state=AgentState.COMPLETED,
+                message=report.message or "Codex completed its current turn",
+                payload={"report_source": report.source, "report_event": event_name, "report_payload": payload},
+            )
+            return
+        if event_name in {"error", "thread/error"}:
+            await self._emit_state_event(
+                agent_id=report.agent_id,
+                state=AgentState.ERROR,
+                message=report.message or "Codex reported an error",
+                payload={"report_source": report.source, "report_event": event_name, "report_payload": payload},
+            )
+            return
+        await self._apply_generic_report(report)
+
+    async def _emit_state_event(
+        self,
+        *,
+        agent_id: str,
+        state: AgentState,
+        message: str,
+        payload: dict[str, object],
+    ) -> None:
+        if state == AgentState.COMPLETED:
+            await self.emit(
+                AgentEvent(
+                    type=EventType.COMPLETED,
+                    agent_id=agent_id,
+                    message=message,
+                    state=AgentState.COMPLETED,
+                    payload=payload,
+                )
+            )
+            return
+        if state == AgentState.ERROR:
+            await self.emit(
+                AgentEvent(
+                    type=EventType.ERROR,
+                    agent_id=agent_id,
+                    message=message,
+                    state=AgentState.ERROR,
+                    payload=payload,
+                )
+            )
+            return
+        await self.emit(
+            AgentEvent(
+                type=EventType.STATE_CHANGED,
+                agent_id=agent_id,
+                message=message,
+                state=state,
+                payload=payload,
+            )
+        )
+
+    def _parse_state(self, raw: str | None) -> AgentState:
+        if not raw:
+            return AgentState.WORKING
+        normalized = raw.strip().lower()
+        for state in AgentState:
+            if state.value == normalized:
+                return state
+        return AgentState.WORKING
+
+    def _map_codex_thread_status(self, status_payload: object) -> tuple[AgentState, str]:
+        if not isinstance(status_payload, dict):
+            return AgentState.WORKING, "Codex status updated"
+        status_type = str(status_payload.get("type") or "active")
+        active_flags = [str(flag) for flag in status_payload.get("activeFlags") or []]
+        if status_type == "active":
+            if "waitingOnApproval" in active_flags:
+                return AgentState.WAITING, "Codex is waiting on approval"
+            if "waitingOnUserInput" in active_flags:
+                return AgentState.WAITING, "Codex is waiting on user input"
+            return AgentState.WORKING, "Codex is working"
+        if status_type == "idle":
+            return AgentState.IDLE, "Codex is idle"
+        if status_type == "systemError":
+            return AgentState.ERROR, "Codex reported a system error"
+        return AgentState.UNKNOWN, f"Codex status changed: {status_type}"

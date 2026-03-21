@@ -170,6 +170,7 @@ class RelayDeckApp(App[None]):
                 )
 
     async def on_mount(self) -> None:
+        await self.orchestrator.start()
         self._focus_input()
         self._event_queue = await self.orchestrator.bus.subscribe()
         self._event_task = asyncio.create_task(self._consume_events())
