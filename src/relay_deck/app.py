@@ -12,6 +12,7 @@ from textual.widgets import Input, RichLog, Static
 from relay_deck.models import AgentEvent, AgentSpec, AgentState, EventType, ToolType
 from relay_deck.orchestrator import Orchestrator
 from relay_deck.widgets.agent_sidebar import AgentCard, AgentSidebar
+from relay_deck.widgets.detail_panel import DetailPanel
 from relay_deck.widgets.status_bar import StatusBar
 
 
@@ -83,6 +84,16 @@ class RelayDeckApp(App[None]):
         scrollbar-color-hover: rgb(62, 82, 102);
     }
 
+    #detail-panel {
+        height: 16;
+        margin: 1 0 0 0;
+        padding: 1 1 0 0;
+        border-top: solid rgb(42, 62, 82);
+        background: rgb(15, 24, 34);
+        color: rgb(209, 216, 224);
+        overflow-y: auto;
+    }
+
     #input-bar {
         dock: bottom;
         height: 3;
@@ -152,6 +163,8 @@ class RelayDeckApp(App[None]):
         self._sidebar_visible = True
         self._selected_agent_id: str | None = None
         self._controller_history: list[tuple[str, str]] = []
+        self._selected_snapshot: list[str] = []
+        self._detail_task: asyncio.Task[None] | None = None
 
     def compose(self) -> ComposeResult:
         yield StatusBar()
@@ -160,6 +173,7 @@ class RelayDeckApp(App[None]):
             with Vertical(id="main-column"):
                 yield Static(id="workspace-header")
                 yield RichLog(id="controller-log", markup=True, wrap=True, auto_scroll=True)
+                yield DetailPanel()
         with Container(id="input-bar"):
             with Horizontal(id="input-row"):
                 yield Static(">", id="input-prompt")
@@ -187,6 +201,10 @@ class RelayDeckApp(App[None]):
         self._refresh_all()
 
     async def on_unmount(self) -> None:
+        if self._detail_task is not None:
+            self._detail_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._detail_task
         if self._event_task is not None:
             self._event_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -234,6 +252,7 @@ class RelayDeckApp(App[None]):
         if self._selected_agent_id is None:
             return
         self._selected_agent_id = None
+        self._selected_snapshot = []
         self._refresh_all()
         self._focus_input()
 
@@ -268,9 +287,12 @@ class RelayDeckApp(App[None]):
         records = self.orchestrator.registry.list()
         if self._selected_agent_id is not None and self.orchestrator.registry.get(self._selected_agent_id) is None:
             self._selected_agent_id = None
+            self._selected_snapshot = []
         self.query_one(StatusBar).set_records(records, self._animation_tick)
         self.query_one(AgentSidebar).set_records(records, self._animation_tick, self._selected_agent_id)
         self._update_workspace_header()
+        self._update_detail_panel()
+        self._queue_detail_refresh()
 
     def _write_user(self, text: str) -> None:
         self._controller_history.append((f"> {text}", "bold cyan"))
@@ -311,6 +333,7 @@ class RelayDeckApp(App[None]):
             self._write_system("Selected agent is no longer available")
             return
         self._selected_agent_id = agent_id
+        self._selected_snapshot = []
         self.orchestrator.registry.mark_read(agent_id)
         self._refresh_all()
         self._focus_input()
@@ -325,8 +348,38 @@ class RelayDeckApp(App[None]):
             header.update("Controller")
             return
         header.update(
-            f"Controller  Selected @{record.name}  {record.tool_type.client_label}  Ctrl+T or /attach"
+            f"Controller  Selected @{record.name}  {record.tool_type.client_label}  {record.state.value}  Ctrl+T or /attach"
         )
+
+    def _update_detail_panel(self) -> None:
+        panel = self.query_one(DetailPanel)
+        if self._selected_agent_id is None:
+            panel.show_placeholder()
+            return
+        record = self.orchestrator.registry.get(self._selected_agent_id)
+        if record is None:
+            panel.show_placeholder()
+            return
+        panel.show_record(record, snapshot_lines=self._selected_snapshot[-16:])
+
+    def _queue_detail_refresh(self) -> None:
+        if self._selected_agent_id is None:
+            if self._detail_task is not None and not self._detail_task.done():
+                self._detail_task.cancel()
+            return
+        if self._detail_task is not None and not self._detail_task.done():
+            return
+        self._detail_task = asyncio.create_task(self._refresh_selected_detail())
+
+    async def _refresh_selected_detail(self) -> None:
+        agent_id = self._selected_agent_id
+        if agent_id is None:
+            return
+        snapshot = await self.orchestrator.capture_agent_snapshot_by_id(agent_id, lines=16)
+        if agent_id != self._selected_agent_id:
+            return
+        self._selected_snapshot = snapshot
+        self._update_detail_panel()
 
     def _focus_input(self) -> None:
         self.query_one(Input).focus()

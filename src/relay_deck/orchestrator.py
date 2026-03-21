@@ -106,6 +106,23 @@ class Orchestrator:
             return f"Failed to attach tmux session: {exc}"
         return ""
 
+    async def capture_agent_snapshot_by_id(self, agent_id: str, *, lines: int = 18) -> list[str]:
+        record = self.registry.get(agent_id)
+        if record is None:
+            return []
+        if record.session_name and record.tool_type in {ToolType.CLAUDE, ToolType.CODEX}:
+            if await self.tmux.is_available():
+                try:
+                    snapshot = await self.tmux.capture_snapshot(record.session_name, lines=lines)
+                except (TmuxUnavailableError, TmuxCommandError):
+                    snapshot = []
+                if snapshot:
+                    return snapshot[-lines:]
+        transcript_tail = [line.text for line in list(record.transcript)[-lines:]]
+        if transcript_tail:
+            return transcript_tail
+        return list(record.recent_output)[-lines:]
+
     async def shutdown(self) -> None:
         if self._runtime_task is not None:
             self._runtime_task.cancel()

@@ -145,6 +145,23 @@ class OrchestratorTmuxRequirementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tmux.attached, ["relay-codex-api-agent-abc123"])
         await orchestrator.shutdown()
 
+    async def test_capture_agent_snapshot_prefers_tmux_snapshot(self) -> None:
+        tmux = FakeTmuxManager()
+        tmux.queue_snapshots(["boot", "latest line"])
+        orchestrator = Orchestrator(tmux=tmux)
+        await orchestrator.create_agent(
+            AgentSpec(
+                name="api-agent",
+                tool_type=ToolType.CODEX,
+                cwd=Path(".").resolve(),
+                launch_command=["codex", "--help"],
+                agent_id="abc123",
+            )
+        )
+        snapshot = await orchestrator.capture_agent_snapshot_by_id("abc123", lines=5)
+        self.assertEqual(snapshot[-1], "latest line")
+        await orchestrator.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()

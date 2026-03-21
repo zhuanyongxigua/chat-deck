@@ -11,34 +11,40 @@ class DetailPanel(Static):
         self.show_placeholder()
 
     def show_placeholder(self) -> None:
-        self.update("Select an agent to inspect its summary, status, and recent output.")
+        self.update("Select an agent to inspect its summary, recent events, and tmux snapshot.")
 
-    def show_record(self, record: AgentRecord | None) -> None:
+    def show_record(self, record: AgentRecord | None, *, snapshot_lines: list[str] | None = None) -> None:
         if record is None:
             self.show_placeholder()
             return
 
-        output_lines = "\n".join(record.recent_output) or "(no output yet)"
-        events = "\n".join(
+        summary = record.last_summary or "(no summary yet)"
+        recent_events = "\n".join(
             f"[{event.created_at.strftime('%H:%M:%S')}] {event.type.value}: {event.message}"
-            for event in list(record.recent_events)[-8:]
+            for event in list(record.recent_events)[-6:]
         ) or "(no events yet)"
-
-        text = (
-            f"Name: {record.name}\n"
-            f"Tool: {record.tool_type.value}\n"
-            f"State: {record.state.value}\n"
-            f"Branch: {record.branch or '-'}\n"
-            f"CWD: {record.cwd}\n"
-            f"Unread: {record.unread_count}\n"
-            f"Needs Attention: {'yes' if record.needs_attention else 'no'}\n"
-            f"Completed: {'yes' if record.completed else 'no'}\n\n"
-            f"Summary\n"
-            f"{record.last_summary or '(no summary yet)'}\n\n"
-            f"Recent Output\n"
-            f"{output_lines}\n\n"
-            f"Recent Events\n"
-            f"{events}"
+        snapshot = "\n".join(snapshot_lines or []) or "(no snapshot yet)"
+        transcript = "\n".join(line.text for line in list(record.transcript)[-6:]) or "(no transcript yet)"
+        text = "\n".join(
+            [
+                f"State: {record.state.value}",
+                f"Client: {record.tool_type.client_label}",
+                f"Branch: {record.branch or '-'}",
+                f"CWD: {record.cwd}",
+                f"Session: {record.session_name or '-'}",
+                "",
+                "Summary",
+                summary,
+                "",
+                "Recent Events",
+                recent_events,
+                "",
+                "Pane Snapshot",
+                snapshot,
+                "",
+                "Transcript Tail",
+                transcript,
+            ]
         )
-        self.update(text)
 
+        self.update(text)
