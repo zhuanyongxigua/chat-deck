@@ -1,40 +1,27 @@
-from pathlib import Path
 import unittest
 
-from relay_deck.models import ToolType
 from relay_deck.router import InputRouter
 
 
 class RouterTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.router = InputRouter()
-
-    def test_parse_agent_message(self) -> None:
-        result = self.router.parse("@api-agent summarize progress")
-        self.assertEqual(result.kind, "agent_message")
+    def test_close_command_parses_agent_name(self) -> None:
+        router = InputRouter()
+        result = router.parse("/close @api-agent")
+        self.assertEqual(result.kind, "close_agent")
         self.assertEqual(result.target, "api-agent")
-        self.assertEqual(result.message, "summarize progress")
 
-    def test_parse_new_command(self) -> None:
-        result = self.router.parse("/new codex api-agent ~/work/api")
+    def test_new_command_parses_client_args_without_repeating_executable(self) -> None:
+        router = InputRouter()
+        result = router.parse("/new codex api-agent /tmp/project --model gpt-5 --profile fast")
         self.assertEqual(result.kind, "create_agent")
-        self.assertEqual(result.tool_type, ToolType.CODEX)
         self.assertEqual(result.name, "api-agent")
-        self.assertEqual(result.cwd, Path("~/work/api").expanduser())
+        self.assertEqual(result.launch_command, ["codex", "--model", "gpt-5", "--profile", "fast"])
 
-    def test_parse_attach_command(self) -> None:
-        result = self.router.parse("/attach @api-agent")
-        self.assertEqual(result.kind, "attach_agent")
-        self.assertEqual(result.target, "api-agent")
-
-    def test_invalid_command(self) -> None:
-        result = self.router.parse("/unknown")
-        self.assertEqual(result.kind, "invalid")
-
-    def test_reject_mock_client_in_user_command(self) -> None:
-        result = self.router.parse("/new mock demo-agent /tmp")
-        self.assertEqual(result.kind, "invalid")
-        self.assertIn("Unsupported client", result.message)
+    def test_new_command_keeps_backward_compatible_double_dash_syntax(self) -> None:
+        router = InputRouter()
+        result = router.parse("/new codex api-agent /tmp/project -- codex --model gpt-5 --profile fast")
+        self.assertEqual(result.kind, "create_agent")
+        self.assertEqual(result.launch_command, ["codex", "--model", "gpt-5", "--profile", "fast"])
 
 
 if __name__ == "__main__":

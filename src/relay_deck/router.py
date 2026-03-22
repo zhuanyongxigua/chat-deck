@@ -15,6 +15,7 @@ class RouterResult:
     tool_type: ToolType | None = None
     cwd: Path | None = None
     name: str | None = None
+    launch_command: list[str] | None = None
 
 
 class InputRouter:
@@ -58,17 +59,34 @@ class InputRouter:
             if target and target.startswith("@"):
                 target = target[1:]
             return RouterResult(kind="attach_agent", target=target or None)
+        if command == "/close":
+            if len(parts) > 2:
+                return RouterResult(kind="invalid", message="Usage: /close [agent-name]")
+            target = parts[1] if len(parts) == 2 else None
+            if target and target.startswith("@"):
+                target = target[1:]
+            return RouterResult(kind="close_agent", target=target or None)
         if command == "/new":
             if len(parts) < 4:
-                return RouterResult(kind="invalid", message="Usage: /new <codex|claude> <name> <cwd>")
+                return RouterResult(kind="invalid", message="Usage: /new <codex|claude> <name> <cwd> [client args...]")
             tool_token = parts[1].lower()
             tool_type = self.USER_CREATABLE_TOOLS.get(tool_token)
             if tool_type is None:
                 return RouterResult(kind="invalid", message=f"Unsupported client: {tool_token}. Use codex or claude.")
+            launch_command: list[str] | None = None
+            if len(parts) > 4:
+                launch_args = parts[4:]
+                if launch_args and launch_args[0] == "--":
+                    launch_args = launch_args[1:]
+                if launch_args and launch_args[0].lower() == tool_token:
+                    launch_args = launch_args[1:]
+                if launch_args:
+                    launch_command = [tool_token, *launch_args]
             return RouterResult(
                 kind="create_agent",
                 tool_type=tool_type,
                 name=parts[2],
                 cwd=Path(parts[3]).expanduser(),
+                launch_command=launch_command,
             )
         return RouterResult(kind="invalid", message=f"Unknown command: {command}")

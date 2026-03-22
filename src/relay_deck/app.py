@@ -11,6 +11,7 @@ from typing import Iterable
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
@@ -58,6 +59,13 @@ class SidebarResizer(Static):
 
 class RelayDeckApp(App[None]):
     WORKING_SPINNER_FRAMES = ("◐", "◓", "◑", "◒")
+    COMMAND_SPECS = [
+        ("/help", "Show available commands"),
+        ("/agents", "List current agents"),
+        ("/new", "Create a Claude or Codex agent"),
+        ("/attach", "Open the selected agent tmux session"),
+        ("/close", "Close the selected or named agent"),
+    ]
 
     CSS = """
     Screen {
@@ -236,6 +244,7 @@ class RelayDeckApp(App[None]):
         ("super+0,ctrl+0,escape", "clear_selection", "Controller"),
         ("ctrl+c", "copy_selection", "Copy"),
         ("ctrl+v", "paste_clipboard", "Paste"),
+        Binding("ctrl+x", "close_selected_agent", "Close Agent", priority=True, show=False),
         ("super+1,ctrl+1", "select_agent_slot(1)", "Select Agent 1"),
         ("super+2,ctrl+2", "select_agent_slot(2)", "Select Agent 2"),
         ("super+3,ctrl+3", "select_agent_slot(3)", "Select Agent 3"),
@@ -274,6 +283,9 @@ class RelayDeckApp(App[None]):
         self._selected_agent_id: str | None = None
         self._controller_history: list[tuple[str, str]] = []
         self._footer_message = ""
+        self._footer_error = False
+        self._command_matches: list[tuple[str, str]] = []
+        self._command_match_index = 0
 
     def compose(self) -> ComposeResult:
         yield StatusBar()
@@ -306,7 +318,7 @@ class RelayDeckApp(App[None]):
         self._animation_timer = self.set_interval(0.2, self._advance_animation)
         self._apply_sidebar_width()
         self._write_system(
-            "Commands: /help, /agents, /new <codex|claude> <name> <cwd>, /attach [agent-name], @agent-name <message>"
+            "Commands: /help, /agents, /new <codex|claude> <name> <cwd> [client args...], /attach [agent-name], /close [agent-name], @agent-name <message>"
         )
         self._write_system("The sidebar keeps all agent status visible without opening extra panes.")
         self._write_system("Claude Code and Codex workers now run inside tmux sessions.")
@@ -337,6 +349,7 @@ class RelayDeckApp(App[None]):
         input_widget.remember(display_text)
         input_widget.value = ""
         input_widget.clear_collapsed_pastes()
+        self._update_command_suggestions("")
         if self._selected_agent_id is not None and not display_text.startswith("/") and not display_text.startswith("@") and not actual_text.strip():
             await self._send_to_selected_agent("")
             self._refresh_all()
@@ -350,6 +363,10 @@ class RelayDeckApp(App[None]):
         else:
             self._write_user(display_text)
             result = self.orchestrator.router.parse(actual_text)
+            if result.kind == "close_agent" and result.target is None and self._selected_agent_id is not None:
+                selected = self.orchestrator.registry.get(self._selected_agent_id)
+                if selected is not None:
+                    result.target = selected.name
             if result.kind == "attach_agent":
                 await self._handle_attach_request(result.target)
             else:
@@ -370,6 +387,26 @@ class RelayDeckApp(App[None]):
     async def action_refresh_views(self) -> None:
         self._refresh_all()
         self._write_system("Views refreshed")
+
+    async def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id != "command-input":
+            return
+        self._update_command_suggestions(event.value)
+
+    async def on_history_input_command_suggestion_requested(self, event: HistoryInput.CommandSuggestionRequested) -> None:
+        if not self._command_matches:
+            return
+        input_widget = self.query_one(HistoryInput)
+        current_value = input_widget.value.strip()
+        selected_command, _ = self._command_matches[self._command_match_index]
+        if current_value == selected_command and len(self._command_matches) > 1:
+            step = -1 if event.reverse else 1
+            self._command_match_index = (self._command_match_index + step) % len(self._command_matches)
+            selected_command, _ = self._command_matches[self._command_match_index]
+        suffix = " " if selected_command in {"/new", "/attach", "/close"} else ""
+        input_widget.value = f"{selected_command}{suffix}"
+        input_widget.cursor_position = len(input_widget.value)
+        self._update_command_suggestions(input_widget.value)
 
     def action_copy_selection(self) -> None:
         input_widget = self.query_one(HistoryInput)
@@ -418,6 +455,19 @@ class RelayDeckApp(App[None]):
 
     async def action_attach_selected_session(self) -> None:
         await self._attach_selected_session()
+
+    async def action_close_selected_agent(self) -> None:
+        if self._selected_agent_id is None:
+            self._set_footer_message("No active agent to close")
+            self._focus_input()
+            return
+        response = await self.orchestrator.close_agent_by_id(self._selected_agent_id)
+        self._selected_agent_id = None
+        if response:
+            self._write_system(response)
+        self._render_main_log()
+        self._refresh_all()
+        self._focus_input()
 
     async def on_agent_card_selected(self, event: AgentCard.Selected) -> None:
         self._select_agent(event.agent_id)
@@ -580,9 +630,17 @@ class RelayDeckApp(App[None]):
 
     def _set_footer_message(self, text: str, *, error: bool = False) -> None:
         self._footer_message = text
+        self._footer_error = error
+        self._render_footer()
+
+    def _render_footer(self) -> None:
         widget = self.query_one("#footer-message", Static)
-        widget.set_class(error, "error")
-        widget.update(text)
+        if self._command_matches:
+            widget.set_class(False, "error")
+            widget.update(self._compose_command_suggestions())
+            return
+        widget.set_class(self._footer_error, "error")
+        widget.update(self._footer_message)
 
     def _looks_like_error(self, text: str) -> bool:
         lowered = text.lower()
@@ -673,6 +731,55 @@ class RelayDeckApp(App[None]):
         if record is None:
             return False
         return self._record_needs_spinner(record)
+
+    def _update_command_suggestions(self, value: str) -> None:
+        text = value.strip()
+        if not text.startswith("/") or " " in text:
+            self._command_matches = []
+            self._command_match_index = 0
+            self._render_footer()
+            return
+        prefix = text
+        matches = [item for item in self.COMMAND_SPECS if item[0].startswith(prefix)]
+        if not matches and prefix == "/":
+            matches = list(self.COMMAND_SPECS)
+        if not matches:
+            self._command_matches = []
+            self._command_match_index = 0
+            self._render_footer()
+            return
+        current_command = self._command_matches[self._command_match_index][0] if self._command_matches else None
+        self._command_matches = matches
+        if current_command is not None:
+            for index, item in enumerate(matches):
+                if item[0] == current_command:
+                    self._command_match_index = index
+                    break
+            else:
+                self._command_match_index = 0
+        else:
+            self._command_match_index = 0
+        self._render_footer()
+
+    def _compose_command_suggestions(self) -> Text:
+        text = Text()
+        text.append("Commands: ", style="dim")
+        for index, (command, _description) in enumerate(self._command_matches):
+            if index:
+                text.append("  ", style="dim")
+            style = "bold #7FB3FF"
+            if index == self._command_match_index:
+                style = "bold #7FE5B2"
+                text.append("[", style="dim")
+                text.append(command, style=style)
+                text.append("]", style="dim")
+            else:
+                text.append(command, style=style)
+        if self._command_matches:
+            text.append("\n", style="dim")
+            text.append(self._command_matches[self._command_match_index][1], style="dim")
+            text.append("  Tab to autocomplete", style="dim")
+        return text
 
     async def _send_to_selected_agent(self, text: str, *, display_text: str | None = None) -> None:
         if self._selected_agent_id is None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from textual.binding import Binding
+from textual.message import Message
 from textual.widgets import Input
 
 
@@ -13,10 +14,17 @@ def default_history_path() -> Path:
 class HistoryInput(Input):
     PASTE_PREVIEW_THRESHOLD = 120
 
+    class CommandSuggestionRequested(Message):
+        def __init__(self, *, reverse: bool = False) -> None:
+            self.reverse = reverse
+            super().__init__()
+
     BINDINGS = [
         *Input.BINDINGS,
         Binding("up", "history_previous", "Previous history", show=False),
         Binding("down", "history_next", "Next history", show=False),
+        Binding("tab", "request_command_suggestion", "Accept suggestion", show=False),
+        Binding("shift+tab", "request_command_suggestion(True)", "Previous suggestion", show=False),
     ]
 
     def __init__(
@@ -71,6 +79,9 @@ class HistoryInput(Input):
             return
         self._history_index += 1
         self._apply_history_value(self._history[self._history_index])
+
+    def action_request_command_suggestion(self, reverse: bool = False) -> None:
+        self.post_message(self.CommandSuggestionRequested(reverse=reverse))
 
     def _apply_history_value(self, value: str) -> None:
         self.value = value

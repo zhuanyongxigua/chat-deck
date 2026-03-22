@@ -186,6 +186,24 @@ class OrchestratorTmuxRequirementTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("a detailed summary of what was completed", sent_text)
         await orchestrator.shutdown()
 
+    async def test_close_agent_stops_adapter_and_destroys_tmux_session(self) -> None:
+        tmux = FakeTmuxManager()
+        orchestrator = Orchestrator(tmux=tmux)
+        await orchestrator.create_agent(
+            AgentSpec(
+                name="api-agent",
+                tool_type=ToolType.CODEX,
+                cwd=Path(".").resolve(),
+                launch_command=["codex", "--help"],
+                agent_id="abc123",
+            )
+        )
+        response = await orchestrator.close_agent("api-agent")
+        self.assertEqual(response, "Closed @api-agent")
+        self.assertIn("relay-codex-api-agent-abc123", tmux.destroyed)
+        self.assertIsNone(orchestrator.registry.get("abc123"))
+        await orchestrator.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()

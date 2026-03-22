@@ -66,6 +66,52 @@ class AppSelectionTests(unittest.IsolatedAsyncioTestCase):
                 footer = app.query_one("#footer-message", Static)
                 self.assertIn("Agent name already exists: demo-codex", str(footer.render()))
 
+    async def test_close_without_target_closes_selected_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = RelayDeckApp(
+                demo=True,
+                history_path=Path(temp_dir) / ".chat-deck" / "command-history.txt",
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await pilot.press("ctrl+1")
+                await pilot.pause()
+                self.assertIsNotNone(app._selected_agent_id)
+
+                input_widget = app.query_one(Input)
+                input_widget.value = "/close"
+                await input_widget.action_submit()
+                await pilot.pause()
+
+                self.assertIsNone(app._selected_agent_id)
+                sidebar = app.query_one(AgentSidebar)
+                cards = list(sidebar.query(AgentCard))
+                self.assertEqual(len(cards), 1)
+                self.assertEqual(cards[0].record.name, "demo-review")
+                footer = app.query_one("#footer-message", Static)
+                self.assertIn("Closed @demo-codex", str(footer.render()))
+
+    async def test_ctrl_x_closes_selected_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = RelayDeckApp(
+                demo=True,
+                history_path=Path(temp_dir) / ".chat-deck" / "command-history.txt",
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await pilot.press("ctrl+1")
+                await pilot.pause()
+                self.assertIsNotNone(app._selected_agent_id)
+
+                await pilot.press("ctrl+x")
+                await pilot.pause()
+
+                self.assertIsNone(app._selected_agent_id)
+                sidebar = app.query_one(AgentSidebar)
+                cards = list(sidebar.query(AgentCard))
+                self.assertEqual(len(cards), 1)
+                self.assertEqual(cards[0].record.name, "demo-review")
+
     async def test_input_history_uses_up_and_down(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             history_path = Path(temp_dir) / ".chat-deck" / "command-history.txt"
@@ -96,6 +142,41 @@ class AppSelectionTests(unittest.IsolatedAsyncioTestCase):
 
             second_widget = HistoryInput(history_path=history_path)
             self.assertEqual(second_widget._history, ["/agents", "/help"])
+
+    async def test_slash_input_shows_command_suggestions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = RelayDeckApp(
+                demo=True,
+                history_path=Path(temp_dir) / ".chat-deck" / "command-history.txt",
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                input_widget = app.query_one(HistoryInput)
+                input_widget.value = "/"
+                await pilot.pause()
+
+                footer = app.query_one("#footer-message", Static)
+                rendered = str(footer.render())
+                self.assertIn("/help", rendered)
+                self.assertIn("/agents", rendered)
+                self.assertIn("/new", rendered)
+
+    async def test_tab_autocompletes_current_command_suggestion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = RelayDeckApp(
+                demo=True,
+                history_path=Path(temp_dir) / ".chat-deck" / "command-history.txt",
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                input_widget = app.query_one(HistoryInput)
+                input_widget.value = "/a"
+                await pilot.pause()
+
+                await pilot.press("tab")
+                await pilot.pause()
+
+                self.assertEqual(input_widget.value, "/agents")
 
     async def test_sidebar_shows_all_agents(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

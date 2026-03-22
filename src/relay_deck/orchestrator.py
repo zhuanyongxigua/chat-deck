@@ -118,6 +118,27 @@ class Orchestrator:
             return f"Unknown agent: {agent_name}"
         return await self.attach_agent_session_by_id(record.agent_id)
 
+    async def close_agent(self, agent_name: str) -> str:
+        record = self.registry.get_by_name(agent_name)
+        if record is None:
+            return f"Unknown agent: {agent_name}"
+        return await self.close_agent_by_id(record.agent_id)
+
+    async def close_agent_by_id(self, agent_id: str) -> str:
+        record = self.registry.get(agent_id)
+        if record is None:
+            return "Selected agent is no longer available"
+        adapter = self._adapters.pop(agent_id, None)
+        if adapter is not None:
+            try:
+                await adapter.stop()
+            except Exception as exc:  # pragma: no cover - defensive shutdown path
+                return f"Failed to close @{record.name}: {exc}"
+        removed = self.registry.remove(agent_id)
+        if removed is None:
+            return "Selected agent is no longer available"
+        return f"Closed @{removed.name}"
+
     async def attach_agent_session_by_id(self, agent_id: str) -> str:
         record = self.registry.get(agent_id)
         if record is None:
@@ -177,8 +198,8 @@ class Orchestrator:
             return ""
         if result.kind == "help":
             return (
-                "Commands: /help, /agents, /new <codex|claude> <name> <cwd>, "
-                "/attach [agent-name], @agent-name <message>. "
+                "Commands: /help, /agents, /new <codex|claude> <name> <cwd> [client args...], "
+                "/attach [agent-name], /close [agent-name], @agent-name <message>. "
                 "Claude/Codex workers run inside tmux sessions."
             )
         if result.kind == "agents":
@@ -200,7 +221,12 @@ class Orchestrator:
                 return f"Working directory does not exist: {cwd}"
             if result.tool_type in {ToolType.CLAUDE, ToolType.CODEX} and not await self.tmux.is_available():
                 return "tmux is required for Claude Code and Codex workers, but it is not installed or not on PATH"
-            spec = AgentSpec(name=result.name, tool_type=result.tool_type, cwd=cwd)
+            spec = AgentSpec(
+                name=result.name,
+                tool_type=result.tool_type,
+                cwd=cwd,
+                launch_command=result.launch_command,
+            )
             try:
                 agent_id = await self.create_agent(spec)
             except RuntimeError as exc:
@@ -210,6 +236,10 @@ class Orchestrator:
             if result.target:
                 return f"Attach @{result.target} from the UI with Ctrl+T or use the selected agent."
             return "Select an agent first, then press Ctrl+T, or run /attach <agent-name> in the UI."
+        if result.kind == "close_agent":
+            if not result.target:
+                return "Usage: /close [agent-name] while an agent is selected, or /close <agent-name>"
+            return await self.close_agent(result.target)
         if result.kind == "agent_message":
             if not result.target:
                 return "Usage: @agent-name <message>"
@@ -262,18 +292,17 @@ class Orchestrator:
         return branch or None
 
     def _prepare_launch_command(self, spec: AgentSpec) -> None:
-        if spec.launch_command is not None:
-            return
         if spec.tool_type == ToolType.CLAUDE:
-            spec.launch_command = self._build_claude_command(spec)
+            spec.launch_command = self._build_claude_command(spec, base_command=spec.launch_command)
         elif spec.tool_type == ToolType.CODEX:
-            spec.launch_command = self._build_codex_command(spec)
+            spec.launch_command = self._build_codex_command(spec, base_command=spec.launch_command)
 
-    def _build_claude_command(self, spec: AgentSpec) -> list[str]:
+    def _build_claude_command(self, spec: AgentSpec, *, base_command: list[str] | None = None) -> list[str]:
         settings_path = self._write_claude_settings(spec)
-        return ["claude", "--settings", str(settings_path)]
+        command = list(base_command or ["claude"])
+        return [*command, "--settings", str(settings_path)]
 
-    def _build_codex_command(self, spec: AgentSpec) -> list[str]:
+    def _build_codex_command(self, spec: AgentSpec, *, base_command: list[str] | None = None) -> list[str]:
         assert spec.agent_id is not None
         notify_argv = [
             sys.executable,
@@ -291,8 +320,9 @@ class Orchestrator:
             "--inbox",
             str(self.done_inbox.path),
         ]
+        command = list(base_command or ["codex"])
         return [
-            "codex",
+            *command,
             "-c",
             f"notify={json.dumps(notify_argv)}",
         ]

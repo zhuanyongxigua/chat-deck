@@ -136,6 +136,42 @@ class OrchestratorSemanticStateTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("agent-turn-complete", notify_command)
             await orchestrator.shutdown()
 
+    async def test_codex_custom_launch_command_keeps_args_and_injects_notify(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orchestrator = Orchestrator(tmux=FakeTmuxManager(), runtime_dir=Path(temp_dir))
+            await orchestrator.create_agent(
+                spec=AgentSpec(
+                    name="codex-agent",
+                    tool_type=ToolType.CODEX,
+                    cwd=Path(".").resolve(),
+                    launch_command=["codex", "--model", "gpt-5", "--profile", "fast"],
+                    agent_id="xyz789",
+                )
+            )
+            command = orchestrator.tmux.created[0]["command"]
+            self.assertEqual(command[:5], ["codex", "--model", "gpt-5", "--profile", "fast"])
+            self.assertEqual(command[5], "-c")
+            self.assertTrue(str(command[6]).startswith("notify="))
+            await orchestrator.shutdown()
+
+    async def test_claude_custom_launch_command_keeps_args_and_injects_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orchestrator = Orchestrator(tmux=FakeTmuxManager(), runtime_dir=Path(temp_dir))
+            await orchestrator.create_agent(
+                spec=AgentSpec(
+                    name="claude-agent",
+                    tool_type=ToolType.CLAUDE,
+                    cwd=Path(".").resolve(),
+                    launch_command=["claude", "--dangerously-skip-permissions"],
+                    agent_id="abc123",
+                )
+            )
+            command = orchestrator.tmux.created[0]["command"]
+            self.assertEqual(command[:2], ["claude", "--dangerously-skip-permissions"])
+            self.assertEqual(command[2], "--settings")
+            self.assertTrue(str(command[3]).endswith("claude-settings.json"))
+            await orchestrator.shutdown()
+
     async def test_runtime_report_maps_claude_waiting_and_completion(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             orchestrator = Orchestrator(tmux=FakeTmuxManager(), runtime_dir=Path(temp_dir))

@@ -63,6 +63,12 @@ class AgentRegistry:
         if record is not None:
             record.unread_count = 0
 
+    def remove(self, agent_id: str) -> AgentRecord | None:
+        record = self._records.pop(agent_id, None)
+        if record is None:
+            return None
+        return copy.deepcopy(record)
+
     def apply_event(self, event: AgentEvent) -> None:
         if event.type == EventType.CONTROLLER:
             return
