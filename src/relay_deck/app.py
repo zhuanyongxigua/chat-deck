@@ -186,9 +186,17 @@ class RelayDeckApp(App[None]):
     TITLE = "Relay Deck"
     SUB_TITLE = "Multi-agent control console"
 
-    def __init__(self, *, demo: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        demo: bool = False,
+        history_path: Path | None = None,
+        history_limit: int = 100,
+    ) -> None:
         super().__init__()
         self.demo = demo
+        self.history_path = history_path
+        self.history_limit = history_limit
         self.orchestrator = Orchestrator()
         self._event_queue: asyncio.Queue[AgentEvent] | None = None
         self._event_task: asyncio.Task[None] | None = None
@@ -215,6 +223,8 @@ class RelayDeckApp(App[None]):
                                 placeholder="Type /new, /attach or @agent-name ...",
                                 id="command-input",
                                 compact=True,
+                                history_path=self.history_path,
+                                history_limit=self.history_limit,
                             )
                     yield Static("", id="footer-message")
 
