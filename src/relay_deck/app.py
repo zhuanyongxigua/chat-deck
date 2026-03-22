@@ -218,6 +218,11 @@ class RelayDeckApp(App[None]):
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         raw = event.value
         self.query_one(Input).value = ""
+        if self._selected_agent_id is not None and not raw.startswith("/") and not raw.startswith("@") and not raw.strip():
+            await self._send_to_selected_agent("")
+            self._refresh_all()
+            self._focus_input()
+            return
         if not raw.strip():
             self._focus_input()
             return
@@ -393,10 +398,11 @@ class RelayDeckApp(App[None]):
         agent_id = self._selected_agent_id
         if agent_id is None:
             return
-        snapshot = await self.orchestrator.capture_agent_snapshot_by_id(agent_id, lines=16)
+        snapshot = await self.orchestrator.capture_agent_snapshot_by_id(agent_id, lines=160)
         if agent_id != self._selected_agent_id:
             return
         self._selected_snapshot = snapshot
+        self._render_main_log()
         self._update_detail_panel()
 
     def _focus_input(self) -> None:
@@ -429,11 +435,14 @@ class RelayDeckApp(App[None]):
                 log.write(Text(text, style=style))
             self._update_input_placeholder()
             return
-        if not record.transcript:
-            log.write(Text(f"@{record.name} selected. Waiting for transcript...", style="dim"))
-        else:
+        if self._selected_snapshot:
+            for line in self._selected_snapshot:
+                log.write(Text(line, style="white"))
+        elif record.transcript:
             for line in record.transcript:
                 log.write(Text(line.text, style=line.style))
+        else:
+            log.write(Text(f"@{record.name} selected. Waiting for tmux pane output...", style="dim"))
         self._update_input_placeholder()
 
     async def _send_to_selected_agent(self, text: str) -> None:
