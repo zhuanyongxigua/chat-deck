@@ -34,8 +34,9 @@ class TmuxPaneState:
 
 
 class TmuxManager:
-    def __init__(self, binary: str = "tmux") -> None:
+    def __init__(self, binary: str = "tmux", *, submit_delay: float = 0.05) -> None:
         self.binary = binary
+        self.submit_delay = submit_delay
         self._available: bool | None = None
 
     async def is_available(self) -> bool:
@@ -80,8 +81,11 @@ class TmuxManager:
         return result.returncode == 0
 
     async def send_text(self, session_name: str, text: str) -> None:
-        await self._run("send-keys", "-t", session_name, "-l", text)
-        await self._run("send-keys", "-t", session_name, "Enter")
+        if text:
+            await self._run("send-keys", "-t", session_name, "-l", text)
+            if self.submit_delay > 0:
+                await asyncio.sleep(self.submit_delay)
+        await self._run("send-keys", "-t", session_name, "C-m")
 
     async def send_interrupt(self, session_name: str) -> None:
         await self._run("send-keys", "-t", session_name, "C-c")
