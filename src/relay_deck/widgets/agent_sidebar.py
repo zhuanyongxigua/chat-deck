@@ -61,6 +61,8 @@ class AgentCard(Static):
             return "●", "bold red"
         if state == AgentState.COMPLETED:
             return "●", "bold green"
+        if state == AgentState.IDLE:
+            return "●", "bold yellow"
         if state == AgentState.WAITING:
             return self.SPINNER_FRAMES[animation_tick % len(self.SPINNER_FRAMES)], "bold yellow"
         return ("●" if animation_tick % 2 == 0 else " ", "bold green")
@@ -125,28 +127,32 @@ class AgentSidebar(VerticalScroll):
         for agent_id in removed:
             self._cards.pop(agent_id).remove()
 
-        if incoming_order != self._order:
-            for agent_id in incoming_order:
-                record = next(record for record in records if record.agent_id == agent_id)
-                card = self._cards.get(agent_id)
-                if card is None:
-                    self._cards[agent_id] = AgentCard(
-                        record,
-                        animation_tick=animation_tick,
-                        active=agent_id == active_agent_id,
-                    )
-                else:
-                    card.update_card(record, animation_tick=animation_tick, active=agent_id == active_agent_id)
-            self.remove_children(".agent-card")
-            self.mount(*(self._cards[agent_id] for agent_id in incoming_order))
-            self._order = incoming_order
-            return
-
         for record in records:
             card = self._cards.get(record.agent_id)
             if card is None:
-                continue
-            card.update_card(record, animation_tick=animation_tick, active=record.agent_id == active_agent_id)
+                card = AgentCard(
+                    record,
+                    animation_tick=animation_tick,
+                    active=record.agent_id == active_agent_id,
+                )
+                self._cards[record.agent_id] = card
+                self.mount(card)
+            else:
+                card.update_card(record, animation_tick=animation_tick, active=record.agent_id == active_agent_id)
+
+        if incoming_order:
+            first_card = self._cards[incoming_order[0]]
+            mounted_cards = [child for child in self.children if isinstance(child, AgentCard)]
+            if mounted_cards and mounted_cards[0] is not first_card:
+                self.move_child(first_card, before=mounted_cards[0])
+
+            previous = first_card
+            for agent_id in incoming_order[1:]:
+                card = self._cards[agent_id]
+                self.move_child(card, after=previous)
+                previous = card
+
+        self._order = list(incoming_order)
 
     def on_click(self, event: events.Click) -> None:
         if isinstance(getattr(event, "widget", None), AgentCard):

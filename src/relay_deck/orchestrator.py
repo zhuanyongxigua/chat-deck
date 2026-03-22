@@ -52,7 +52,10 @@ class Orchestrator:
             raise RuntimeError("tmux is required for Claude Code and Codex workers")
         existing = self.registry.get_by_name(spec.name)
         if existing is not None:
-            raise RuntimeError(f"Agent name already exists: {spec.name}")
+            raise RuntimeError(
+                f"Agent name already exists: {spec.name}. "
+                f"Use a different handle, for example {spec.name}-2."
+            )
         agent_id = spec.agent_id or str(uuid.uuid4())[:8]
         spec.agent_id = agent_id
         self._prepare_launch_command(spec)

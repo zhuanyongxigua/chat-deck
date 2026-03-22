@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import shlex
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -126,8 +127,13 @@ class TmuxManager:
         return TmuxPaneState(session_exists=True, pane_dead=pane_dead, exit_status=exit_status)
 
     async def attach_session(self, session_name: str) -> None:
-        proc = await asyncio.create_subprocess_exec(self.binary, "attach-session", "-t", session_name)
-        await proc.wait()
+        try:
+            subprocess.run(
+                [self.binary, "attach-session", "-t", session_name],
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise TmuxUnavailableError("tmux executable not found") from exc
 
     async def _run(self, *args: str, check: bool = True) -> TmuxCommandResult:
         try:

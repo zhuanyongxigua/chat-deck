@@ -12,7 +12,7 @@ from textual.widgets import Input, RichLog, Static
 from relay_deck.models import AgentEvent, AgentSpec, AgentState, EventType, ToolType
 from relay_deck.orchestrator import Orchestrator
 from relay_deck.widgets.agent_sidebar import AgentCard, AgentSidebar
-from relay_deck.widgets.detail_panel import DetailPanel
+from relay_deck.widgets.history_input import HistoryInput
 from relay_deck.widgets.status_bar import StatusBar
 
 
@@ -84,18 +84,15 @@ class RelayDeckApp(App[None]):
         scrollbar-color-hover: rgb(62, 82, 102);
     }
 
-    #detail-panel {
-        height: 16;
-        margin: 1 0 0 0;
-        padding: 1 1 0 0;
-        border-top: solid rgb(42, 62, 82);
-        background: rgb(15, 24, 34);
-        color: rgb(209, 216, 224);
-        overflow-y: auto;
+    #footer-stack {
+        dock: bottom;
+        height: 4;
+        margin: 0;
+        padding: 0;
+        background: rgb(11, 17, 24);
     }
 
     #input-bar {
-        dock: bottom;
         height: 3;
         margin: 0;
         border-top: solid rgb(42, 62, 82);
@@ -131,6 +128,18 @@ class RelayDeckApp(App[None]):
         border: none;
         background: transparent;
     }
+
+    #footer-message {
+        height: 1;
+        margin: 0 1;
+        padding: 0;
+        color: rgb(209, 216, 224);
+        background: rgb(11, 17, 24);
+    }
+
+    #footer-message.error {
+        color: rgb(255, 111, 111);
+    }
     """
 
     BINDINGS = [
@@ -165,6 +174,7 @@ class RelayDeckApp(App[None]):
         self._controller_history: list[tuple[str, str]] = []
         self._selected_snapshot: list[str] = []
         self._detail_task: asyncio.Task[None] | None = None
+        self._footer_message = ""
 
     def compose(self) -> ComposeResult:
         yield StatusBar()
@@ -173,15 +183,16 @@ class RelayDeckApp(App[None]):
             with Vertical(id="main-column"):
                 yield Static(id="workspace-header")
                 yield RichLog(id="controller-log", markup=True, wrap=True, auto_scroll=True)
-                yield DetailPanel()
-        with Container(id="input-bar"):
-            with Horizontal(id="input-row"):
-                yield Static(">", id="input-prompt")
-                yield Input(
-                    placeholder="Type /new, /attach or @agent-name ...",
-                    id="command-input",
-                    compact=True,
-                )
+        with Vertical(id="footer-stack"):
+            with Container(id="input-bar"):
+                with Horizontal(id="input-row"):
+                    yield Static(">", id="input-prompt")
+                    yield HistoryInput(
+                        placeholder="Type /new, /attach or @agent-name ...",
+                        id="command-input",
+                        compact=True,
+                    )
+            yield Static("", id="footer-message")
 
     async def on_mount(self) -> None:
         await self.orchestrator.start()
@@ -217,7 +228,9 @@ class RelayDeckApp(App[None]):
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         raw = event.value
-        self.query_one(Input).value = ""
+        input_widget = self.query_one(HistoryInput)
+        input_widget.remember(raw)
+        input_widget.value = ""
         if self._selected_agent_id is not None and not raw.startswith("/") and not raw.startswith("@") and not raw.strip():
             await self._send_to_selected_agent("")
             self._refresh_all()
@@ -226,6 +239,10 @@ class RelayDeckApp(App[None]):
         if not raw.strip():
             self._focus_input()
             return
+        if self._selected_agent_id is not None and (raw.startswith("/") or raw.startswith("@")):
+            self._selected_agent_id = None
+            self._selected_snapshot = []
+            self._render_main_log()
         if self._selected_agent_id is not None and not raw.startswith("/") and not raw.startswith("@"):
             await self._send_to_selected_agent(raw)
         else:
@@ -234,12 +251,16 @@ class RelayDeckApp(App[None]):
             if result.kind == "attach_agent":
                 await self._handle_attach_request(result.target)
             else:
+                previous_agent_id = None
+                if result.kind == "create_agent" and result.name:
+                    existing = self.orchestrator.registry.get_by_name(result.name)
+                    previous_agent_id = existing.agent_id if existing is not None else None
                 response = await self.orchestrator.dispatch(result)
                 if response:
                     self._write_system(response)
-                if result.kind == "create_agent" and result.name:
+                if result.kind == "create_agent" and result.name and response.startswith("Created "):
                     record = self.orchestrator.registry.get_by_name(result.name)
-                    if record is not None:
+                    if record is not None and record.agent_id != previous_agent_id:
                         self._select_agent(record.agent_id)
         self._refresh_all()
         self._focus_input()
@@ -307,16 +328,17 @@ class RelayDeckApp(App[None]):
         self.query_one(StatusBar).set_records(records, self._animation_tick)
         self.query_one(AgentSidebar).set_records(records, self._animation_tick, self._selected_agent_id)
         self._update_workspace_header()
-        self._update_detail_panel()
         self._queue_detail_refresh()
 
     def _write_user(self, text: str) -> None:
         self._controller_history.append((f"> {text}", "bold cyan"))
+        self._set_footer_message("")
         if self._selected_agent_id is None:
             self.query_one(RichLog).write(Text(f"> {text}", style="bold cyan"))
 
     def _write_system(self, text: str) -> None:
         self._controller_history.append((text, "white"))
+        self._set_footer_message(text, error=self._looks_like_error(text))
         if self._selected_agent_id is None:
             self.query_one(RichLog).write(Text(text, style="white"))
 
@@ -328,6 +350,8 @@ class RelayDeckApp(App[None]):
         style = self._style_for_event(event)
         line = f"[{label}] {event.type.value}: {event.message}"
         self._controller_history.append((line, style))
+        if event.type == EventType.ERROR or event.state == AgentState.ERROR:
+            self._set_footer_message(event.message, error=True)
         if self._selected_agent_id is None:
             self.query_one(RichLog).write(Text(line, style=style))
             return
@@ -374,17 +398,6 @@ class RelayDeckApp(App[None]):
             f"@{record.name}  {record.tool_type.client_label}  {record.state.value}  Esc returns to controller  Ctrl+T opens tmux"
         )
 
-    def _update_detail_panel(self) -> None:
-        panel = self.query_one(DetailPanel)
-        if self._selected_agent_id is None:
-            panel.show_placeholder()
-            return
-        record = self.orchestrator.registry.get(self._selected_agent_id)
-        if record is None:
-            panel.show_placeholder()
-            return
-        panel.show_record(record, snapshot_lines=self._selected_snapshot[-16:])
-
     def _queue_detail_refresh(self) -> None:
         if self._selected_agent_id is None:
             if self._detail_task is not None and not self._detail_task.done():
@@ -403,14 +416,33 @@ class RelayDeckApp(App[None]):
             return
         self._selected_snapshot = snapshot
         self._render_main_log()
-        self._update_detail_panel()
 
     def _focus_input(self) -> None:
-        self.query_one(Input).focus()
+        self.query_one(HistoryInput).focus()
         self._update_input_placeholder()
 
+    def _set_footer_message(self, text: str, *, error: bool = False) -> None:
+        self._footer_message = text
+        widget = self.query_one("#footer-message", Static)
+        widget.set_class(error, "error")
+        widget.update(text)
+
+    def _looks_like_error(self, text: str) -> bool:
+        lowered = text.lower()
+        error_markers = (
+            "error",
+            "failed",
+            "unknown",
+            "does not exist",
+            "already exists",
+            "required",
+            "invalid",
+            "unsupported",
+        )
+        return any(marker in lowered for marker in error_markers)
+
     def _update_input_placeholder(self) -> None:
-        input_widget = self.query_one(Input)
+        input_widget = self.query_one(HistoryInput)
         if self._selected_agent_id is None:
             input_widget.placeholder = "Ask controller, create agents naturally, or use /new /attach @agent-name ..."
             return
@@ -463,6 +495,7 @@ class RelayDeckApp(App[None]):
 
     async def _handle_attach_request(self, target: str | None) -> None:
         if target:
+            self._write_system(f"Attaching @{target}. Detach with Ctrl+B then d to return.")
             with self.suspend():
                 response = await self.orchestrator.attach_agent_session(target)
             if response:
@@ -483,6 +516,7 @@ class RelayDeckApp(App[None]):
             self._selected_agent_id = None
             self._refresh_all()
             return
+        self._write_system(f"Attaching @{record.name}. Detach with Ctrl+B then d to return.")
         with self.suspend():
             response = await self.orchestrator.attach_agent_session_by_id(record.agent_id)
         if response:

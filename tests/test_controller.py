@@ -68,6 +68,16 @@ class OrchestratorNaturalLanguageTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(created)
             await orchestrator.shutdown()
 
+    async def test_duplicate_agent_name_returns_helpful_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orchestrator = Orchestrator(tmux=FakeTmuxManager())
+            first = await orchestrator.handle_input(f"/new codex api-agent {temp_dir}")
+            second = await orchestrator.handle_input(f"/new codex api-agent {temp_dir}")
+            self.assertIn("Created Codex agent", first)
+            self.assertIn("Agent name already exists: api-agent", second)
+            self.assertIn("api-agent-2", second)
+            await orchestrator.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()
