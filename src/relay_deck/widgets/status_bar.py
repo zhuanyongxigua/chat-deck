@@ -33,6 +33,8 @@ class StatusBar(Static):
             return "●", "bold red"
         if state == AgentState.COMPLETED:
             return "●", "bold green"
+        if state == AgentState.IDLE:
+            return "●", "bold yellow"
         if state == AgentState.WAITING:
             return self.SPINNER_FRAMES[animation_tick % len(self.SPINNER_FRAMES)], "bold yellow"
         if state == AgentState.UNKNOWN:

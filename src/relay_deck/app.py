@@ -55,7 +55,7 @@ class RelayDeckApp(App[None]):
     }
 
     .agent-card {
-        margin: 1 1 0 1;
+        margin: 0 1 0 1;
         height: auto;
     }
 
