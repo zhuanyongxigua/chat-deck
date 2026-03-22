@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import re
+import time
 from pathlib import Path
 
+from textual import events
 from textual.binding import Binding
 from textual.message import Message
 from textual.widgets import Input
@@ -13,6 +16,9 @@ def default_history_path() -> Path:
 
 class HistoryInput(Input):
     PASTE_PREVIEW_THRESHOLD = 120
+    PASTE_PLACEHOLDER_RE = re.compile(r"^\[Pasted Content \d+ chars(?: #\d+)?\]$")
+    PASTE_DEDUP_WINDOW_SECONDS = 0.25
+    PASTE_FOLLOWUP_SUPPRESSION_SECONDS = 0.35
 
     class CommandSuggestionRequested(Message):
         def __init__(self, *, reverse: bool = False) -> None:
@@ -41,6 +47,13 @@ class HistoryInput(Input):
         self._history_index: int | None = None
         self._history_draft = ""
         self._collapsed_pastes: dict[str, str] = {}
+        self._bypass_paste_collapse = False
+        self._last_paste_text = ""
+        self._last_paste_at = 0.0
+        self._suppressed_paste_text = ""
+        self._suppressed_paste_placeholder = ""
+        self._suppressed_paste_offset = 0
+        self._suppress_followup_until = 0.0
         self._load_history()
 
     def remember(self, value: str) -> None:
@@ -90,13 +103,30 @@ class HistoryInput(Input):
     def insert_pasted_text(self, text: str) -> None:
         if not text:
             return
-        start, end = self.selection
-        if self._should_collapse_paste(text):
-            placeholder = self._build_paste_placeholder(text)
-            self._collapsed_pastes[placeholder] = text
-            self.replace(placeholder, start, end)
+        if self._is_duplicate_paste(text):
             return
-        self.replace(text, start, end)
+        start, end = self.selection
+        self._replace_with_paste_awareness(text, start, end)
+        self._mark_recent_paste(text)
+
+    def replace(self, text: str, start: int, end: int) -> None:
+        if self._should_ignore_followup_text(text):
+            return
+        self._replace_with_paste_awareness(text, start, end)
+
+    def insert_text_at_cursor(self, text: str) -> None:
+        if self._should_ignore_followup_text(text):
+            return
+        if self._bypass_paste_collapse or not self._should_collapse_paste(text):
+            super().insert_text_at_cursor(text)
+            return
+        placeholder = self._store_collapsed_paste(text)
+        self._activate_followup_suppression(placeholder, text)
+        self._bypass_paste_collapse = True
+        try:
+            super().insert_text_at_cursor(placeholder)
+        finally:
+            self._bypass_paste_collapse = False
 
     def expand_value(self, value: str | None = None) -> str:
         expanded = self.value if value is None else value
@@ -106,12 +136,20 @@ class HistoryInput(Input):
 
     def clear_collapsed_pastes(self) -> None:
         self._collapsed_pastes.clear()
+        self._suppressed_paste_text = ""
+        self._suppressed_paste_placeholder = ""
+        self._suppressed_paste_offset = 0
+        self._suppress_followup_until = 0.0
 
-    def _on_paste(self, event) -> None:
+    def _on_paste(self, event: events.Paste) -> None:
         self.insert_pasted_text(event.text)
         event.stop()
 
     def _should_collapse_paste(self, text: str) -> bool:
+        if not text:
+            return False
+        if self.PASTE_PLACEHOLDER_RE.fullmatch(text):
+            return False
         return "\n" in text or len(text) >= self.PASTE_PREVIEW_THRESHOLD
 
     def _build_paste_placeholder(self, text: str) -> str:
@@ -129,6 +167,56 @@ class HistoryInput(Input):
             if self._collapsed_pastes.get(candidate) == text:
                 return candidate
             counter += 1
+
+    def _store_collapsed_paste(self, text: str) -> str:
+        placeholder = self._build_paste_placeholder(text)
+        self._collapsed_pastes[placeholder] = text
+        return placeholder
+
+    def _is_duplicate_paste(self, text: str) -> bool:
+        now = time.monotonic()
+        return (
+            text == self._last_paste_text
+            and (now - self._last_paste_at) <= self.PASTE_DEDUP_WINDOW_SECONDS
+        )
+
+    def _mark_recent_paste(self, text: str) -> None:
+        self._last_paste_text = text
+        self._last_paste_at = time.monotonic()
+
+    def _replace_with_paste_awareness(self, text: str, start: int, end: int) -> None:
+        if self._bypass_paste_collapse or not self._should_collapse_paste(text):
+            super().replace(text, start, end)
+            return
+        placeholder = self._store_collapsed_paste(text)
+        self._activate_followup_suppression(placeholder, text)
+        self._bypass_paste_collapse = True
+        try:
+            super().replace(placeholder, start, end)
+        finally:
+            self._bypass_paste_collapse = False
+
+    def _activate_followup_suppression(self, placeholder: str, text: str) -> None:
+        self._suppressed_paste_text = text
+        self._suppressed_paste_placeholder = placeholder
+        self._suppressed_paste_offset = 0
+        self._suppress_followup_until = time.monotonic() + self.PASTE_FOLLOWUP_SUPPRESSION_SECONDS
+
+    def _should_ignore_followup_text(self, text: str) -> bool:
+        if not text:
+            return False
+        if time.monotonic() > self._suppress_followup_until:
+            return False
+        if not self._suppressed_paste_text or not self._suppressed_paste_placeholder:
+            return False
+        if self._suppressed_paste_placeholder not in self.value:
+            return False
+        start = self._suppressed_paste_offset
+        expected = self._suppressed_paste_text[start : start + len(text)]
+        if text != expected:
+            return False
+        self._suppressed_paste_offset += len(text)
+        return True
 
     def _load_history(self) -> None:
         try:

@@ -149,9 +149,20 @@ class Orchestrator:
             return f"Agent @{record.name} does not have a tmux session yet"
         if not await self.tmux.is_available():
             return "tmux is required but is not installed or not on PATH"
-        if not await self.tmux.has_session(record.session_name):
-            return f"tmux session is gone: {record.session_name}"
         try:
+            pane_state = await self.tmux.pane_state(record.session_name)
+            if not pane_state.session_exists:
+                return f"tmux session is gone: {record.session_name}"
+            if pane_state.pane_dead:
+                if pane_state.exit_status in (None, 0):
+                    return (
+                        f"tmux pane for @{record.name} has already exited cleanly. "
+                        "There is no live CLI to attach to."
+                    )
+                return (
+                    f"tmux pane for @{record.name} has already exited with code {pane_state.exit_status}. "
+                    "There is no live CLI to attach to."
+                )
             await self.tmux.attach_session(record.session_name)
         except (TmuxUnavailableError, TmuxCommandError, FileNotFoundError) as exc:
             return f"Failed to attach tmux session: {exc}"

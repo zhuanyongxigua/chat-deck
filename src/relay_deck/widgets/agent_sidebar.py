@@ -93,7 +93,7 @@ class AgentSidebar(VerticalScroll):
         self._cards: dict[str, AgentCard] = {}
         self._order: list[str] = []
         self._placeholder = Static(
-            "No agents yet.\n\nUse /new <codex|claude> <name> <cwd>\nor say: 创建一个 codex 会话在 /path/to/project",
+            "No agents yet.\n\nUse /new <codex|claude> <name> <cwd>\nor say: create a codex session in /path/to/project",
             id="agent-sidebar-placeholder",
         )
 

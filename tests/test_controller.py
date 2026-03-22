@@ -5,6 +5,7 @@ import unittest
 from relay_deck.controller import ControllerInterpreter
 from relay_deck.models import ToolType
 from relay_deck.orchestrator import Orchestrator
+from relay_deck.tmux_manager import TmuxPaneState
 
 
 class ControllerInterpreterTests(unittest.TestCase):
@@ -53,9 +54,12 @@ class FakeTmuxManager:
         return []
 
     async def pane_state(self, session_name: str):
-        from relay_deck.tmux_manager import TmuxPaneState
-
         return TmuxPaneState(session_exists=True)
+
+
+class DeadPaneTmuxManager(FakeTmuxManager):
+    async def pane_state(self, session_name: str):
+        return TmuxPaneState(session_exists=True, pane_dead=True, exit_status=0)
 
 
 class OrchestratorNaturalLanguageTests(unittest.IsolatedAsyncioTestCase):
@@ -76,6 +80,15 @@ class OrchestratorNaturalLanguageTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Created Codex agent", first)
             self.assertIn("Agent name already exists: api-agent", second)
             self.assertIn("api-agent-2", second)
+            await orchestrator.shutdown()
+
+    async def test_attach_returns_message_for_dead_tmux_pane(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orchestrator = Orchestrator(tmux=DeadPaneTmuxManager())
+            created = await orchestrator.handle_input(f"/new codex api-agent {temp_dir}")
+            self.assertIn("Created Codex agent", created)
+            message = await orchestrator.attach_agent_session("api-agent")
+            self.assertIn("already exited cleanly", message)
             await orchestrator.shutdown()
 
 

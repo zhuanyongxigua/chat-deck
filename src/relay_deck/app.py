@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import shutil
-import subprocess
-import sys
 from pathlib import Path
 from typing import Iterable
 
@@ -242,8 +239,6 @@ class RelayDeckApp(App[None]):
         ("q", "quit", "Quit"),
         ("super+b,ctrl+b,b", "toggle_sidebar", "Toggle Sidebar"),
         ("super+0,ctrl+0,escape", "clear_selection", "Controller"),
-        ("ctrl+c", "copy_selection", "Copy"),
-        ("ctrl+v", "paste_clipboard", "Paste"),
         Binding("ctrl+x", "close_selected_agent", "Close Agent", priority=True, show=False),
         ("super+1,ctrl+1", "select_agent_slot(1)", "Select Agent 1"),
         ("super+2,ctrl+2", "select_agent_slot(2)", "Select Agent 2"),
@@ -359,9 +354,9 @@ class RelayDeckApp(App[None]):
             self._focus_input()
             return
         if self._selected_agent_id is not None and not display_text.startswith("/") and not display_text.startswith("@"):
-            await self._send_to_selected_agent(actual_text, display_text=display_text)
+            await self._send_to_selected_agent(actual_text, display_text=actual_text)
         else:
-            self._write_user(display_text)
+            self._write_user(actual_text)
             result = self.orchestrator.router.parse(actual_text)
             if result.kind == "close_agent" and result.target is None and self._selected_agent_id is not None:
                 selected = self.orchestrator.registry.get(self._selected_agent_id)
@@ -407,26 +402,6 @@ class RelayDeckApp(App[None]):
         input_widget.value = f"{selected_command}{suffix}"
         input_widget.cursor_position = len(input_widget.value)
         self._update_command_suggestions(input_widget.value)
-
-    def action_copy_selection(self) -> None:
-        input_widget = self.query_one(HistoryInput)
-        copied_text = self.screen.get_selected_text() or input_widget.selected_text
-        if not copied_text:
-            self._set_footer_message("Nothing selected to copy")
-            return
-        self.copy_to_clipboard(copied_text)
-        self._write_system_clipboard(copied_text)
-        self._set_footer_message("Copied selection")
-
-    def action_paste_clipboard(self) -> None:
-        text = self._read_clipboard_text()
-        if not text:
-            self._set_footer_message("Clipboard is empty")
-            return
-        input_widget = self.query_one(HistoryInput)
-        input_widget.focus()
-        input_widget.insert_pasted_text(text)
-        self._set_footer_message("")
 
     async def action_toggle_sidebar(self) -> None:
         self._sidebar_visible = not self._sidebar_visible
@@ -591,42 +566,6 @@ class RelayDeckApp(App[None]):
     def _apply_sidebar_width(self) -> None:
         sidebar = self.query_one(AgentSidebar)
         sidebar.styles.width = f"{self._sidebar_width_percent:.1f}%"
-
-    def _read_clipboard_text(self) -> str:
-        system_clipboard = self._read_system_clipboard()
-        if system_clipboard:
-            return system_clipboard
-        return self.clipboard
-
-    def _read_system_clipboard(self) -> str:
-        if sys.platform == "darwin" and shutil.which("pbpaste"):
-            try:
-                result = subprocess.run(
-                    ["pbpaste"],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-            except OSError:
-                return ""
-            if result.returncode == 0:
-                return result.stdout
-        return ""
-
-    def _write_system_clipboard(self, text: str) -> bool:
-        if sys.platform == "darwin" and shutil.which("pbcopy"):
-            try:
-                result = subprocess.run(
-                    ["pbcopy"],
-                    input=text,
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-            except OSError:
-                return False
-            return result.returncode == 0
-        return False
 
     def _set_footer_message(self, text: str, *, error: bool = False) -> None:
         self._footer_message = text

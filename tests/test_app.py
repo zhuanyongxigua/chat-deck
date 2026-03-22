@@ -2,10 +2,9 @@ import asyncio
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
-from textual.geometry import Offset
-from textual.selection import Selection
+from textual import events
 from textual.widgets import Input, Static
 
 from relay_deck.app import RelayDeckApp
@@ -246,7 +245,7 @@ class AppSelectionTests(unittest.IsolatedAsyncioTestCase):
                 sidebar = app.query_one(AgentSidebar)
                 self.assertTrue(str(sidebar.styles.width))
 
-    async def test_ctrl_c_copies_selected_input_text(self) -> None:
+    async def test_bracketed_paste_event_collapses_large_text(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             app = RelayDeckApp(
                 demo=True,
@@ -255,30 +254,12 @@ class AppSelectionTests(unittest.IsolatedAsyncioTestCase):
             async with app.run_test() as pilot:
                 await pilot.pause()
                 input_widget = app.query_one(HistoryInput)
-                input_widget.value = "copy this line"
-                input_widget.select_all()
-                with patch.object(app, "_write_system_clipboard", return_value=True):
-                    app.action_copy_selection()
-                self.assertEqual(app.clipboard, "copy this line")
+                pasted = ("hello\\nworld\\n" * 30)
+                input_widget._on_paste(events.Paste(pasted))
+                self.assertEqual(input_widget.value, f"[Pasted Content {len(pasted)} chars]")
+                self.assertEqual(input_widget.expand_value(), pasted)
 
-    async def test_ctrl_c_copies_selected_chat_text(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            app = RelayDeckApp(
-                demo=False,
-                history_path=Path(temp_dir) / ".chat-deck" / "command-history.txt",
-            )
-            async with app.run_test() as pilot:
-                await pilot.pause()
-                app._controller_history = [("copy me", "white")]
-                app._render_main_log()
-                log = app.query_one("#controller-log")
-                app.screen.selections[log] = Selection.from_offsets(Offset(0, 0), Offset(7, 0))
-                with patch.object(log, "get_selection", return_value=("copy me", "\n")):
-                    with patch.object(app, "_write_system_clipboard", return_value=True):
-                        app.action_copy_selection()
-                self.assertEqual(app.clipboard, "copy me")
-
-    async def test_ctrl_v_pastes_clipboard_into_input(self) -> None:
+    async def test_input_action_paste_collapses_large_clipboard(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             app = RelayDeckApp(
                 demo=True,
@@ -287,12 +268,12 @@ class AppSelectionTests(unittest.IsolatedAsyncioTestCase):
             async with app.run_test() as pilot:
                 await pilot.pause()
                 input_widget = app.query_one(HistoryInput)
-                input_widget.value = ""
-                with patch.object(app, "_read_clipboard_text", return_value="pasted from clipboard"):
-                    app.action_paste_clipboard()
-                self.assertEqual(input_widget.value, "pasted from clipboard")
+                app.copy_to_clipboard("y" * 240)
+                input_widget.action_paste()
+                self.assertEqual(input_widget.value, "[Pasted Content 240 chars]")
+                self.assertEqual(input_widget.expand_value(), "y" * 240)
 
-    async def test_large_paste_collapses_into_placeholder(self) -> None:
+    async def test_duplicate_bracketed_paste_is_deduplicated(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             app = RelayDeckApp(
                 demo=True,
@@ -301,11 +282,26 @@ class AppSelectionTests(unittest.IsolatedAsyncioTestCase):
             async with app.run_test() as pilot:
                 await pilot.pause()
                 input_widget = app.query_one(HistoryInput)
-                large_text = "x" * 1225
-                with patch.object(app, "_read_clipboard_text", return_value=large_text):
-                    app.action_paste_clipboard()
-                self.assertEqual(input_widget.value, "[Pasted Content 1225 chars]")
-                self.assertEqual(input_widget.expand_value(), large_text)
+                pasted = "z" * 240
+                input_widget._on_paste(events.Paste(pasted))
+                input_widget._on_paste(events.Paste(pasted))
+                self.assertEqual(input_widget.value, "[Pasted Content 240 chars]")
+                self.assertEqual(input_widget.expand_value(), pasted)
+
+    async def test_followup_raw_text_after_collapsed_paste_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = RelayDeckApp(
+                demo=True,
+                history_path=Path(temp_dir) / ".chat-deck" / "command-history.txt",
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                input_widget = app.query_one(HistoryInput)
+                pasted = "first line\nsecond line\nthird line"
+                input_widget._on_paste(events.Paste(pasted))
+                input_widget.insert_text_at_cursor("first line")
+                self.assertEqual(input_widget.value, f"[Pasted Content {len(pasted)} chars]")
+                self.assertEqual(input_widget.expand_value(), pasted)
 
     async def test_collapsed_paste_expands_before_agent_send(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -329,9 +325,28 @@ class AppSelectionTests(unittest.IsolatedAsyncioTestCase):
                 send_mock.assert_awaited_once_with(
                     "demo-codex",
                     large_text,
-                    display_message="[Pasted Content 1225 chars]",
+                    display_message=large_text,
                 )
                 self.assertEqual(input_widget.value, "")
+
+    async def test_collapsed_paste_is_expanded_in_controller_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = RelayDeckApp(
+                demo=False,
+                history_path=Path(temp_dir) / ".chat-deck" / "command-history.txt",
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                input_widget = app.query_one(HistoryInput)
+                pasted = "line one\nline two\nline three"
+                input_widget.insert_pasted_text(pasted)
+                await input_widget.action_submit()
+                await pilot.pause()
+
+                log = app.query_one("#controller-log", Static)
+                rendered = str(log.render())
+                self.assertIn("> line one", rendered)
+                self.assertNotIn("[Pasted Content", rendered)
 
     async def test_selected_agent_shows_spinner_on_pending_user_message(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
