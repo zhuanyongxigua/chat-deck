@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -86,6 +87,32 @@ class OrchestratorSemanticStateTests(unittest.IsolatedAsyncioTestCase):
             )
             await orchestrator.shutdown()
 
+    async def test_codex_agent_writes_notify_command_and_uses_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orchestrator = Orchestrator(tmux=FakeTmuxManager(), runtime_dir=Path(temp_dir))
+            await orchestrator.create_agent(
+                spec=AgentSpec(
+                    name="codex-agent",
+                    tool_type=ToolType.CODEX,
+                    cwd=Path(".").resolve(),
+                    agent_id="xyz789",
+                )
+            )
+            command = orchestrator.tmux.created[0]["command"]
+            self.assertEqual(command[0], "codex")
+            self.assertEqual(command[1], "-c")
+            self.assertTrue(str(command[2]).startswith("notify="))
+            notify_command = json.loads(str(command[2])[len("notify=") :])
+            self.assertEqual(notify_command[0], sys.executable)
+            self.assertEqual(
+                notify_command[1:6],
+                ["-m", "relay_deck", "codex-notify", "--runtime-dir", temp_dir],
+            )
+            self.assertIn("--agent-id", notify_command)
+            self.assertIn("xyz789", notify_command)
+            self.assertIn("agent-turn-complete", notify_command)
+            await orchestrator.shutdown()
+
     async def test_runtime_report_maps_claude_waiting_and_completion(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             orchestrator = Orchestrator(tmux=FakeTmuxManager(), runtime_dir=Path(temp_dir))
@@ -154,6 +181,33 @@ class OrchestratorSemanticStateTests(unittest.IsolatedAsyncioTestCase):
             assert record is not None
             self.assertEqual(record.state.value, "waiting")
             self.assertTrue(record.needs_attention)
+
+    async def test_runtime_report_keeps_codex_summary_on_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orchestrator = Orchestrator(tmux=FakeTmuxManager(), runtime_dir=Path(temp_dir))
+            orchestrator.registry.register(
+                agent_id="xyz789",
+                name="codex-agent",
+                tool_type=ToolType.CODEX,
+                cwd=Path(temp_dir),
+                branch=None,
+            )
+            orchestrator.runtime.write_report(
+                WorkerReport(
+                    agent_id="xyz789",
+                    source="codex",
+                    event_name="agent-turn-complete",
+                    message="Codex completed its current turn",
+                    summary="Updated billing tests and fixed flaky snapshot assertions.",
+                    state="completed",
+                    payload={"summary": "Updated billing tests and fixed flaky snapshot assertions."},
+                )
+            )
+            await orchestrator.poll_runtime_reports_once()
+            record = orchestrator.registry.get("xyz789")
+            assert record is not None
+            self.assertEqual(record.state.value, "completed")
+            self.assertEqual(record.last_summary, "Updated billing tests and fixed flaky snapshot assertions.")
 
 
 if __name__ == "__main__":

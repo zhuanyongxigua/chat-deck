@@ -93,15 +93,19 @@ class RuntimeEventInbox:
         return reports
 
 
-def build_report_command(
+def build_report_argv(
     *,
     python_executable: str,
     runtime_dir: Path,
     agent_id: str,
     source: str,
     event_name: str,
-) -> str:
-    command = [
+    state: str | None = None,
+    message: str | None = None,
+    summary: str | None = None,
+    expect_payload_json: bool = False,
+) -> list[str]:
+    argv = [
         python_executable,
         "-m",
         "relay_deck",
@@ -115,4 +119,60 @@ def build_report_command(
         "--event",
         event_name,
     ]
-    return shlex.join(command)
+    if state is not None:
+        argv.extend(["--state", state])
+    if message is not None:
+        argv.extend(["--message", message])
+    if summary is not None:
+        argv.extend(["--summary", summary])
+    if expect_payload_json:
+        argv.append("--payload-json")
+    return argv
+
+
+def build_report_command(
+    *,
+    python_executable: str,
+    runtime_dir: Path,
+    agent_id: str,
+    source: str,
+    event_name: str,
+    state: str | None = None,
+    message: str | None = None,
+    summary: str | None = None,
+    expect_payload_json: bool = False,
+) -> str:
+    return shlex.join(
+        build_report_argv(
+            python_executable=python_executable,
+            runtime_dir=runtime_dir,
+            agent_id=agent_id,
+            source=source,
+            event_name=event_name,
+            state=state,
+            message=message,
+            summary=summary,
+            expect_payload_json=expect_payload_json,
+        )
+    )
+
+
+def build_codex_notify_argv(
+    *,
+    python_executable: str,
+    runtime_dir: Path,
+    agent_id: str,
+    event_name: str = "agent-turn-complete",
+) -> list[str]:
+    return [
+        python_executable,
+        "-m",
+        "relay_deck",
+        "codex-notify",
+        "--runtime-dir",
+        str(runtime_dir),
+        "--agent-id",
+        agent_id,
+        "--event",
+        event_name,
+    ]

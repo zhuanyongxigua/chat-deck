@@ -105,7 +105,7 @@ class AgentRegistry:
             record.state = AgentState.COMPLETED
             record.completed = True
             record.needs_attention = False
-            if event.message:
+            if event.message and not record.last_summary:
                 record.last_summary = event.message
             record.unread_count += 1
         elif event.type == EventType.ERROR:

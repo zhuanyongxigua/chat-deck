@@ -49,4 +49,5 @@ Real Claude Code and Codex workers require `tmux` to be installed and available 
 - The UI focuses on status visibility, routing, and pane snapshots rather than full terminal emulation.
 - Clicking a sidebar card or using `Ctrl/Cmd+1..9` selects an agent. `Ctrl+T` or `/attach <agent-name>` opens the real tmux session.
 - Agent cards show the client type explicitly. The current user-facing clients are `Codex` and `Claude Code`.
+- Claude Code uses generated hooks for semantic state callbacks. Codex now injects a `notify` command so `agent-turn-complete` reports flow back into the panel with a summary when available.
 - If `tmux`, `codex`, or `claude` is missing, the agent will surface an error state in the UI.

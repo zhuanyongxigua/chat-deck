@@ -14,7 +14,12 @@ from relay_deck.controller import ControllerInterpreter
 from relay_deck.events import EventBus
 from relay_deck.models import AgentEvent, AgentSpec, AgentState, EventType, ToolType
 from relay_deck.registry import AgentRegistry
-from relay_deck.runtime_events import RuntimeEventInbox, WorkerReport, build_report_command
+from relay_deck.runtime_events import (
+    RuntimeEventInbox,
+    WorkerReport,
+    build_codex_notify_argv,
+    build_report_command,
+)
 from relay_deck.router import InputRouter, RouterResult
 from relay_deck.tmux_manager import TmuxCommandError, TmuxManager, TmuxUnavailableError
 
@@ -239,11 +244,24 @@ class Orchestrator:
         if spec.tool_type == ToolType.CLAUDE:
             spec.launch_command = self._build_claude_command(spec)
         elif spec.tool_type == ToolType.CODEX:
-            spec.launch_command = ["codex"]
+            spec.launch_command = self._build_codex_command(spec)
 
     def _build_claude_command(self, spec: AgentSpec) -> list[str]:
         settings_path = self._write_claude_settings(spec)
         return ["claude", "--settings", str(settings_path)]
+
+    def _build_codex_command(self, spec: AgentSpec) -> list[str]:
+        assert spec.agent_id is not None
+        notify_argv = build_codex_notify_argv(
+            python_executable=sys.executable,
+            runtime_dir=self.runtime.runtime_dir,
+            agent_id=spec.agent_id,
+        )
+        return [
+            "codex",
+            "-c",
+            f"notify={json.dumps(notify_argv)}",
+        ]
 
     def _write_claude_settings(self, spec: AgentSpec) -> Path:
         assert spec.agent_id is not None
