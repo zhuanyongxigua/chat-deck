@@ -5,8 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "relay-deck"
 version = "0.1.0"
-description = "A Textual-based multi-agent control console for CLI coding agents."
+description = "Chat-first multi-agent TUI for Claude Code and Codex, built with Python, Textual, and tmux."
 readme = "README.md"
+license = {text = "MIT"}
 requires-python = ">=3.11"
 dependencies = [
   "rich>=13.7.0",
@@ -26,4 +27,3 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
