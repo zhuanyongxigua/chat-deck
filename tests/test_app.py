@@ -39,7 +39,7 @@ class AppSelectionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("Handled: continue with the remaining work", chat_text)
                 self.assertNotIn("Mock agent working", chat_text)
 
-    async def test_controller_command_from_agent_view_returns_to_controller(self) -> None:
+    async def test_controller_command_from_agent_view_keeps_selected_agent(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             app = RelayDeckApp(
                 demo=True,
@@ -49,14 +49,17 @@ class AppSelectionTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 await pilot.press("ctrl+1")
                 await pilot.pause()
-                self.assertIsNotNone(app._selected_agent_id)
+                selected_agent_id = app._selected_agent_id
+                self.assertIsNotNone(selected_agent_id)
 
                 input_widget = app.query_one(Input)
                 input_widget.value = "/new codex demo-codex /tmp"
                 await input_widget.action_submit()
                 await pilot.pause()
 
-                self.assertIsNone(app._selected_agent_id)
+                self.assertEqual(app._selected_agent_id, selected_agent_id)
+                header = app.query_one("#workspace-header", Static)
+                self.assertIn("@demo-codex", str(header.render()))
                 footer = app.query_one("#footer-message", Static)
                 self.assertIn("Agent name already exists: demo-codex", str(footer.render()))
 
@@ -123,6 +126,41 @@ class AppSelectionTests(unittest.IsolatedAsyncioTestCase):
                 footer = app.query_one("#footer-stack")
                 self.assertIsNotNone(footer.parent)
                 self.assertEqual(footer.parent.id, "workspace")
+
+    async def test_sidebar_background_click_keeps_selected_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = RelayDeckApp(
+                demo=True,
+                history_path=Path(temp_dir) / ".chat-deck" / "command-history.txt",
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await pilot.press("ctrl+1")
+                await pilot.pause()
+                selected_agent_id = app._selected_agent_id
+                self.assertIsNotNone(selected_agent_id)
+
+                await app.on_agent_sidebar_background_selected(AgentSidebar.BackgroundSelected())
+                await pilot.pause()
+
+                self.assertEqual(app._selected_agent_id, selected_agent_id)
+
+    async def test_sidebar_width_can_be_updated_from_drag_position(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = RelayDeckApp(
+                demo=True,
+                history_path=Path(temp_dir) / ".chat-deck" / "command-history.txt",
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                body = app.query_one("#body")
+                target_x = body.region.x + body.region.width * 0.45
+                app._set_sidebar_width_from_screen_x(target_x)
+                await pilot.pause()
+
+                self.assertGreater(app._sidebar_width_percent, 40.0)
+                sidebar = app.query_one(AgentSidebar)
+                self.assertTrue(str(sidebar.styles.width))
 
     def test_history_input_persists_only_the_latest_limit(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

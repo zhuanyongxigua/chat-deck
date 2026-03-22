@@ -9,7 +9,7 @@ from textual.containers import VerticalScroll
 from textual.message import Message
 from textual.widgets import Static
 
-from relay_deck.models import AgentRecord, AgentState
+from relay_deck.models import AgentRecord, AgentState, display_state_label
 
 
 class AgentCard(Static):
@@ -63,8 +63,8 @@ class AgentCard(Static):
             return "●", "bold green"
         if state == AgentState.IDLE:
             return "●", "bold yellow"
-        if state == AgentState.WAITING:
-            return self.SPINNER_FRAMES[animation_tick % len(self.SPINNER_FRAMES)], "bold yellow"
+        if state in {AgentState.WAITING, AgentState.WORKING}:
+            return self.SPINNER_FRAMES[animation_tick % len(self.SPINNER_FRAMES)], "bold green"
         return ("●" if animation_tick % 2 == 0 else " ", "bold green")
 
     def _status_label(self, state: AgentState) -> str:
@@ -72,15 +72,11 @@ class AgentCard(Static):
             return "ready"
         if state == AgentState.ERROR:
             return "error"
-        if state == AgentState.WORKING:
-            return "working"
-        if state == AgentState.WAITING:
-            return "waiting"
         if state == AgentState.BLOCKED:
             return "blocked"
         if state == AgentState.IDLE:
             return "idle"
-        return state.value
+        return display_state_label(state)
 
     def _border_style(self, state: AgentState, active: bool) -> str:
         if active:

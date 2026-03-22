@@ -35,8 +35,8 @@ class StatusBar(Static):
             return "●", "bold green"
         if state == AgentState.IDLE:
             return "●", "bold yellow"
-        if state == AgentState.WAITING:
-            return self.SPINNER_FRAMES[animation_tick % len(self.SPINNER_FRAMES)], "bold yellow"
+        if state in {AgentState.WAITING, AgentState.WORKING}:
+            return self.SPINNER_FRAMES[animation_tick % len(self.SPINNER_FRAMES)], "bold green"
         if state == AgentState.UNKNOWN:
             return "●" if animation_tick % 2 == 0 else " ", "bold green"
         return "●" if animation_tick % 2 == 0 else " ", "bold green"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from textual.widgets import Static
 
-from relay_deck.models import AgentRecord
+from relay_deck.models import AgentRecord, display_state_label
 
 
 class DetailPanel(Static):
@@ -27,7 +27,7 @@ class DetailPanel(Static):
         transcript = "\n".join(line.text for line in list(record.transcript)[-6:]) or "(no transcript yet)"
         text = "\n".join(
             [
-                f"State: {record.state.value}",
+                f"State: {display_state_label(record.state)}",
                 f"Client: {record.tool_type.client_label}",
                 f"Branch: {record.branch or '-'}",
                 f"CWD: {record.cwd}",

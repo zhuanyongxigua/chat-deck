@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from textual.widgets import DataTable
 
-from relay_deck.models import AgentRecord
+from relay_deck.models import AgentRecord, display_state_label
 
 
 class AgentTable(DataTable):
@@ -17,7 +17,7 @@ class AgentTable(DataTable):
             self.add_row(
                 record.name,
                 record.tool_type.value,
-                record.state.value,
+                display_state_label(record.state),
                 str(record.unread_count),
                 str(record.cwd),
                 key=record.agent_id,

@@ -5,16 +5,51 @@ import contextlib
 from pathlib import Path
 
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.css.query import NoMatches
+from textual.message import Message
 from textual.widgets import Input, RichLog, Static
 
-from relay_deck.models import AgentEvent, AgentSpec, AgentState, EventType, ToolType
+from relay_deck.models import AgentEvent, AgentSpec, AgentState, EventType, ToolType, display_state_label
 from relay_deck.orchestrator import Orchestrator
+from relay_deck.runtime_events import default_task_done_inbox_path
 from relay_deck.widgets.agent_sidebar import AgentCard, AgentSidebar
 from relay_deck.widgets.history_input import HistoryInput
 from relay_deck.widgets.status_bar import StatusBar
+
+
+class SidebarResizer(Static):
+    class Dragged(Message):
+        def __init__(self, screen_x: float) -> None:
+            self.screen_x = screen_x
+            super().__init__()
+
+    def __init__(self) -> None:
+        super().__init__("", id="sidebar-resizer")
+        self._dragging = False
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        self._dragging = True
+        self.capture_mouse(True)
+        self.add_class("-dragging")
+        event.stop()
+        self.post_message(self.Dragged(event.screen_x if event.screen_x is not None else self.region.x + event.x))
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if not self._dragging:
+            return
+        event.stop()
+        self.post_message(self.Dragged(event.screen_x if event.screen_x is not None else self.region.x + event.x))
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if not self._dragging:
+            return
+        self._dragging = False
+        self.capture_mouse(False)
+        self.remove_class("-dragging")
+        event.stop()
 
 
 class RelayDeckApp(App[None]):
@@ -48,14 +83,26 @@ class RelayDeckApp(App[None]):
     }
 
     #agent-sidebar {
-        width: 40;
+        width: 32%;
         height: 100%;
         min-width: 32;
-        max-width: 48;
         padding: 0;
         background: rgb(14, 22, 31);
-        border-right: solid rgb(42, 62, 82);
         overflow-y: auto;
+    }
+
+    #sidebar-resizer {
+        width: 1;
+        height: 100%;
+        background: rgb(42, 62, 82);
+    }
+
+    #sidebar-resizer:hover {
+        background: rgb(88, 119, 150);
+    }
+
+    #sidebar-resizer.-dragging {
+        background: rgb(127, 179, 255);
     }
 
     #workspace {
@@ -83,7 +130,7 @@ class RelayDeckApp(App[None]):
     #main-column {
         width: 1fr;
         height: 1fr;
-        padding: 1 0 0 1;
+        padding: 0 0 0 1;
         margin: 0;
         background: rgb(15, 24, 34);
         overflow-x: hidden;
@@ -197,12 +244,14 @@ class RelayDeckApp(App[None]):
         self.demo = demo
         self.history_path = history_path
         self.history_limit = history_limit
-        self.orchestrator = Orchestrator()
+        done_inbox_path = history_path.parent / "inbox.jsonl" if history_path is not None else default_task_done_inbox_path()
+        self.orchestrator = Orchestrator(done_inbox_path=done_inbox_path)
         self._event_queue: asyncio.Queue[AgentEvent] | None = None
         self._event_task: asyncio.Task[None] | None = None
         self._animation_timer = None
         self._animation_tick = 0
         self._sidebar_visible = True
+        self._sidebar_width_percent = 32.0
         self._selected_agent_id: str | None = None
         self._controller_history: list[tuple[str, str]] = []
         self._footer_message = ""
@@ -211,6 +260,7 @@ class RelayDeckApp(App[None]):
         yield StatusBar()
         with Horizontal(id="body"):
             yield AgentSidebar()
+            yield SidebarResizer()
             with Vertical(id="workspace"):
                 with Vertical(id="main-column"):
                     yield Static(id="workspace-header")
@@ -234,6 +284,7 @@ class RelayDeckApp(App[None]):
         self._event_queue = await self.orchestrator.bus.subscribe()
         self._event_task = asyncio.create_task(self._consume_events())
         self._animation_timer = self.set_interval(0.2, self._advance_animation)
+        self._apply_sidebar_width()
         self._write_system(
             "Commands: /help, /agents, /new <codex|claude> <name> <cwd>, /attach [agent-name], @agent-name <message>"
         )
@@ -272,9 +323,6 @@ class RelayDeckApp(App[None]):
         if not raw.strip():
             self._focus_input()
             return
-        if self._selected_agent_id is not None and (raw.startswith("/") or raw.startswith("@")):
-            self._selected_agent_id = None
-            self._render_main_log()
         if self._selected_agent_id is not None and not raw.startswith("/") and not raw.startswith("@"):
             await self._send_to_selected_agent(raw)
         else:
@@ -304,6 +352,9 @@ class RelayDeckApp(App[None]):
     async def action_toggle_sidebar(self) -> None:
         self._sidebar_visible = not self._sidebar_visible
         self.query_one(AgentSidebar).display = self._sidebar_visible
+        self.query_one(SidebarResizer).display = self._sidebar_visible
+        if self._sidebar_visible:
+            self._apply_sidebar_width()
         self._write_system("Sidebar shown" if self._sidebar_visible else "Sidebar hidden")
         self._refresh_all()
         self._focus_input()
@@ -330,7 +381,10 @@ class RelayDeckApp(App[None]):
         self._select_agent(event.agent_id)
 
     async def on_agent_sidebar_background_selected(self, event: AgentSidebar.BackgroundSelected) -> None:
-        await self.action_clear_selection()
+        self._focus_input()
+
+    async def on_sidebar_resizer_dragged(self, event: SidebarResizer.Dragged) -> None:
+        self._set_sidebar_width_from_screen_x(event.screen_x)
 
     async def _consume_events(self) -> None:
         assert self._event_queue is not None
@@ -392,7 +446,7 @@ class RelayDeckApp(App[None]):
             return "bold red"
         if event.type == EventType.COMPLETED or event.state == AgentState.COMPLETED:
             return "bold green"
-        if event.state == AgentState.WAITING:
+        if event.state in {AgentState.WAITING, AgentState.WORKING}:
             return "yellow"
         if event.type == EventType.SUMMARY_UPDATED:
             return "magenta"
@@ -424,12 +478,25 @@ class RelayDeckApp(App[None]):
             header.update("Controller")
             return
         header.update(
-            f"@{record.name}  {record.tool_type.client_label}  {record.state.value}  Esc returns to controller  Ctrl+T opens tmux"
+            f"@{record.name}  {record.tool_type.client_label}  {display_state_label(record.state)}  Esc returns to controller  Ctrl+T opens tmux"
         )
 
     def _focus_input(self) -> None:
         self.query_one(HistoryInput).focus()
         self._update_input_placeholder()
+
+    def _set_sidebar_width_from_screen_x(self, screen_x: float) -> None:
+        body = self.query_one("#body", Horizontal)
+        body_width = max(body.region.width, 1)
+        relative_x = max(0.0, min(screen_x - body.region.x, float(body_width)))
+        percent = relative_x / body_width * 100.0
+        min_percent = min(70.0, max(16.0, (32 / body_width) * 100.0))
+        self._sidebar_width_percent = max(min_percent, min(percent, 70.0))
+        self._apply_sidebar_width()
+
+    def _apply_sidebar_width(self) -> None:
+        sidebar = self.query_one(AgentSidebar)
+        sidebar.styles.width = f"{self._sidebar_width_percent:.1f}%"
 
     def _set_footer_message(self, text: str, *, error: bool = False) -> None:
         self._footer_message = text
