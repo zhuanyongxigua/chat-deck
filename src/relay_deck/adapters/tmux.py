@@ -82,7 +82,7 @@ class TmuxAgentAdapter(AgentAdapter):
         )
         self._poll_task = asyncio.create_task(self._poll_session())
 
-    async def send(self, message: str) -> None:
+    async def send(self, message: str, *, display_message: str | None = None) -> None:
         if self._closed:
             await self._emit_error("tmux session is not running")
             return
@@ -96,7 +96,7 @@ class TmuxAgentAdapter(AgentAdapter):
             AgentEvent(
                 type=EventType.MESSAGE_SENT,
                 agent_id=self.spec.agent_id,
-                message=message,
+                message=display_message or message,
                 state=AgentState.WORKING,
                 payload={"session_name": self.session_name},
             )

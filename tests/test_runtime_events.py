@@ -8,7 +8,7 @@ from pathlib import Path
 
 from relay_deck.models import AgentSpec, ToolType
 from relay_deck.orchestrator import Orchestrator
-from relay_deck.runtime_events import RuntimeEventInbox, WorkerReport
+from relay_deck.runtime_events import RuntimeEventInbox, TurnResult, WorkerReport
 from relay_deck.tmux_manager import TmuxPaneState
 
 
@@ -63,6 +63,25 @@ class RuntimeEventInboxTests(unittest.TestCase):
             self.assertEqual(reports[0].agent_id, "abc123")
             self.assertEqual(reports[0].event_name, "Stop")
 
+    def test_write_turn_result_and_drain_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            inbox = RuntimeEventInbox(Path(temp_dir))
+            inbox.write_turn_result(
+                TurnResult(
+                    agent_id="abc123",
+                    turn_id="turn-1",
+                    status="completed",
+                    summary="Fixed the billing reconciliation path.",
+                    next_step="Run the billing integration tests.",
+                    risks=["Needs a production backfill."],
+                )
+            )
+            results = inbox.drain_turn_results()
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].agent_id, "abc123")
+            self.assertEqual(results[0].turn_id, "turn-1")
+            self.assertEqual(results[0].summary, "Fixed the billing reconciliation path.")
+
 
 class OrchestratorSemanticStateTests(unittest.IsolatedAsyncioTestCase):
     async def test_claude_agent_writes_hook_settings_and_uses_them(self) -> None:
@@ -85,6 +104,8 @@ class OrchestratorSemanticStateTests(unittest.IsolatedAsyncioTestCase):
                 sorted(settings["hooks"].keys()),
                 ["Notification", "PermissionRequest", "SessionEnd", "Stop"],
             )
+            stop_command = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+            self.assertIn("publish-done", stop_command)
             await orchestrator.shutdown()
 
     async def test_codex_agent_writes_notify_command_and_uses_it(self) -> None:
@@ -106,8 +127,10 @@ class OrchestratorSemanticStateTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(notify_command[0], sys.executable)
             self.assertEqual(
                 notify_command[1:6],
-                ["-m", "relay_deck", "codex-notify", "--runtime-dir", temp_dir],
+                ["-m", "relay_deck", "publish-done", "--tool", "codex"],
             )
+            self.assertIn("--runtime-dir", notify_command)
+            self.assertIn(temp_dir, notify_command)
             self.assertIn("--agent-id", notify_command)
             self.assertIn("xyz789", notify_command)
             self.assertIn("agent-turn-complete", notify_command)
@@ -208,6 +231,34 @@ class OrchestratorSemanticStateTests(unittest.IsolatedAsyncioTestCase):
             assert record is not None
             self.assertEqual(record.state.value, "completed")
             self.assertEqual(record.last_summary, "Updated billing tests and fixed flaky snapshot assertions.")
+
+    async def test_turn_result_updates_summary_and_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orchestrator = Orchestrator(tmux=FakeTmuxManager(), runtime_dir=Path(temp_dir))
+            orchestrator.registry.register(
+                agent_id="abc123",
+                name="claude-agent",
+                tool_type=ToolType.CLAUDE,
+                cwd=Path(temp_dir),
+                branch=None,
+            )
+            orchestrator.runtime.write_turn_result(
+                TurnResult(
+                    agent_id="abc123",
+                    turn_id="turn-1",
+                    status="completed",
+                    summary="Implemented the new retry guard.",
+                    next_step="Run the flaky integration suite.",
+                    risks=["May still retry too aggressively under load."],
+                )
+            )
+            await orchestrator.poll_runtime_reports_once()
+            record = orchestrator.registry.get("abc123")
+            assert record is not None
+            self.assertEqual(record.state.value, "completed")
+            self.assertIn("Implemented the new retry guard.", record.last_summary)
+            self.assertIn("Run the flaky integration suite.", record.last_summary)
+            self.assertNotIn("Next:", record.last_summary)
 
 
 if __name__ == "__main__":

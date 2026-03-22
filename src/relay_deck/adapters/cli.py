@@ -73,7 +73,7 @@ class CliAgentAdapter(AgentAdapter):
             self._stderr_task = asyncio.create_task(self._consume_stream(self._process.stderr, is_error=True))
         asyncio.create_task(self._watch_process())
 
-    async def send(self, message: str) -> None:
+    async def send(self, message: str, *, display_message: str | None = None) -> None:
         if self._process is None or self._process.stdin is None:
             await self.emit(
                 AgentEvent(
@@ -102,7 +102,7 @@ class CliAgentAdapter(AgentAdapter):
             AgentEvent(
                 type=EventType.MESSAGE_SENT,
                 agent_id=self.spec.agent_id,
-                message=message,
+                message=display_message or message,
                 state=AgentState.WORKING,
             )
         )

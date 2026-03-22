@@ -28,14 +28,15 @@ class MockAdapter(AgentAdapter):
             )
         )
 
-    async def send(self, message: str) -> None:
+    async def send(self, message: str, *, display_message: str | None = None) -> None:
         if self._closed:
             return
+        visible_message = display_message or message
         await self.emit(
             AgentEvent(
                 type=EventType.MESSAGE_SENT,
                 agent_id=self.spec.agent_id,
-                message=message,
+                message=visible_message,
                 state=AgentState.WORKING,
             )
         )
@@ -52,7 +53,7 @@ class MockAdapter(AgentAdapter):
             AgentEvent(
                 type=EventType.OUTPUT,
                 agent_id=self.spec.agent_id,
-                message=f"Handled: {message}",
+                message=f"Handled: {visible_message}",
                 state=AgentState.WORKING,
             )
         )
@@ -60,7 +61,7 @@ class MockAdapter(AgentAdapter):
             AgentEvent(
                 type=EventType.SUMMARY_UPDATED,
                 agent_id=self.spec.agent_id,
-                message=f"Handled: {message}",
+                message=f"Handled: {visible_message}",
             )
         )
         await self.emit(

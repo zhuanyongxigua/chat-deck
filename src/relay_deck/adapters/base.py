@@ -18,7 +18,7 @@ class AgentAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def send(self, message: str) -> None:
+    async def send(self, message: str, *, display_message: str | None = None) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -28,4 +28,3 @@ class AgentAdapter(ABC):
     @abstractmethod
     async def stop(self) -> None:
         raise NotImplementedError
-

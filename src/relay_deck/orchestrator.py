@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import shlex
 import sys
 import tempfile
 import uuid
@@ -12,12 +13,14 @@ from relay_deck.adapters import ClaudeCodeAdapter, CodexAdapter, MockAdapter
 from relay_deck.adapters.base import AgentAdapter
 from relay_deck.controller import ControllerInterpreter
 from relay_deck.events import EventBus
-from relay_deck.models import AgentEvent, AgentSpec, AgentState, EventType, ToolType
+from relay_deck.models import AgentEvent, AgentSpec, AgentState, EventType, ToolType, display_state_label
 from relay_deck.registry import AgentRegistry
 from relay_deck.runtime_events import (
     RuntimeEventInbox,
+    TaskDoneEvent,
+    TaskDoneInbox,
+    TurnResult,
     WorkerReport,
-    build_codex_notify_argv,
     build_report_command,
 )
 from relay_deck.router import InputRouter, RouterResult
@@ -25,18 +28,26 @@ from relay_deck.tmux_manager import TmuxCommandError, TmuxManager, TmuxUnavailab
 
 
 class Orchestrator:
-    def __init__(self, tmux: TmuxManager | None = None, runtime_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        tmux: TmuxManager | None = None,
+        runtime_dir: Path | None = None,
+        done_inbox_path: Path | None = None,
+    ) -> None:
+        runtime_root = runtime_dir or Path(tempfile.mkdtemp(prefix="relay-deck-"))
         self.registry = AgentRegistry()
         self.bus = EventBus()
         self.router = InputRouter()
         self.controller = ControllerInterpreter()
         self.tmux = tmux or TmuxManager()
-        self.runtime = RuntimeEventInbox(runtime_dir or Path(tempfile.mkdtemp(prefix="relay-deck-")))
+        self.runtime = RuntimeEventInbox(runtime_root)
+        self.done_inbox = TaskDoneInbox(done_inbox_path or (runtime_root / "inbox.jsonl"))
         self._adapters: dict[str, AgentAdapter] = {}
         self._runtime_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         self.runtime.ensure()
+        self.done_inbox.ensure()
         if self._runtime_task is None:
             self._runtime_task = asyncio.create_task(self._consume_runtime_reports())
 
@@ -92,7 +103,12 @@ class Orchestrator:
         adapter = self._adapters.get(record.agent_id)
         if adapter is None:
             return f"Agent {agent_name} is not attached"
-        await adapter.send(message)
+        wire_message = message
+        if record.tool_type in {ToolType.CLAUDE, ToolType.CODEX}:
+            wire_message = self._build_task_done_prompt(
+                message=message,
+            )
+        await adapter.send(wire_message, display_message=message)
         return f"Sent to @{agent_name}: {message}"
 
     async def attach_agent_session(self, agent_name: str) -> str:
@@ -147,7 +163,13 @@ class Orchestrator:
         reports = self.runtime.drain()
         for report in reports:
             await self._apply_worker_report(report)
-        return len(reports)
+        turn_results = self.runtime.drain_turn_results()
+        for result in turn_results:
+            await self._apply_turn_result(result)
+        task_done_events = self.done_inbox.drain()
+        for event in task_done_events:
+            await self._apply_task_done_event(event)
+        return len(reports) + len(turn_results) + len(task_done_events)
 
     async def _dispatch(self, result: RouterResult) -> str:
         if result.kind == "empty":
@@ -163,7 +185,7 @@ class Orchestrator:
             if not agents:
                 return "No agents registered"
             return "\n".join(
-                f"{item.name} [{item.tool_type.client_label}] {item.state.value} unread={item.unread_count} cwd={item.cwd}"
+                f"{item.name} [{item.tool_type.client_label}] {display_state_label(item.state)} unread={item.unread_count} cwd={item.cwd}"
                 for item in agents
             )
         if result.kind == "invalid":
@@ -252,11 +274,22 @@ class Orchestrator:
 
     def _build_codex_command(self, spec: AgentSpec) -> list[str]:
         assert spec.agent_id is not None
-        notify_argv = build_codex_notify_argv(
-            python_executable=sys.executable,
-            runtime_dir=self.runtime.runtime_dir,
-            agent_id=spec.agent_id,
-        )
+        notify_argv = [
+            sys.executable,
+            "-m",
+            "relay_deck",
+            "publish-done",
+            "--tool",
+            "codex",
+            "--runtime-dir",
+            str(self.runtime.runtime_dir),
+            "--agent-id",
+            spec.agent_id,
+            "--event",
+            "agent-turn-complete",
+            "--inbox",
+            str(self.done_inbox.path),
+        ]
         return [
             "codex",
             "-c",
@@ -269,18 +302,26 @@ class Orchestrator:
         settings_path = agent_dir / "claude-settings.json"
         hooks = {}
         for event_name in ("Notification", "PermissionRequest", "Stop", "SessionEnd"):
+            if event_name == "Stop":
+                command = self._build_publish_done_command(
+                    tool="claude",
+                    agent_id=spec.agent_id,
+                    event_name=event_name,
+                )
+            else:
+                command = build_report_command(
+                    python_executable=sys.executable,
+                    runtime_dir=self.runtime.runtime_dir,
+                    agent_id=spec.agent_id,
+                    source="claude",
+                    event_name=event_name,
+                )
             hooks[event_name] = [
                 {
                     "hooks": [
                         {
                             "type": "command",
-                            "command": build_report_command(
-                                python_executable=sys.executable,
-                                runtime_dir=self.runtime.runtime_dir,
-                                agent_id=spec.agent_id,
-                                source="claude",
-                                event_name=event_name,
-                            ),
+                            "command": command,
                             "timeout": 10,
                         }
                     ]
@@ -311,6 +352,58 @@ class Orchestrator:
             await self._apply_codex_report(report)
             return
         await self._apply_generic_report(report)
+
+    async def _apply_turn_result(self, result: TurnResult) -> None:
+        if self.registry.get(result.agent_id) is None:
+            return
+        message = self._format_turn_result_message(result)
+        if message:
+            await self.emit(
+                AgentEvent(
+                    type=EventType.SUMMARY_UPDATED,
+                    agent_id=result.agent_id,
+                    message=message,
+                    payload={
+                        "turn_id": result.turn_id,
+                        "turn_status": result.status,
+                        "source": "turn-result",
+                    },
+                )
+            )
+        state = self._parse_state(result.status)
+        await self.emit(
+            AgentEvent(
+                type=EventType.STATE_CHANGED,
+                agent_id=result.agent_id,
+                message=message or f"Turn {result.turn_id} reported {result.status}",
+                state=state,
+                payload={
+                    "turn_id": result.turn_id,
+                    "turn_status": result.status,
+                    "source": "turn-result",
+                },
+            )
+        )
+
+    async def _apply_task_done_event(self, event: TaskDoneEvent) -> None:
+        if self.registry.get(event.agent_id) is None:
+            return
+        message = self._format_task_done_message(event)
+        if not message:
+            return
+        await self.emit(
+            AgentEvent(
+                type=EventType.SUMMARY_UPDATED,
+                agent_id=event.agent_id,
+                message=message,
+                payload={
+                    "source": "task_done_inbox",
+                    "tool": event.tool,
+                    "cwd": event.cwd,
+                    "session_id": event.session_id,
+                },
+            )
+        )
 
     async def _apply_generic_report(self, report: WorkerReport) -> None:
         state = self._parse_state(report.state)
@@ -467,3 +560,54 @@ class Orchestrator:
         if status_type == "systemError":
             return AgentState.ERROR, "Codex reported a system error"
         return AgentState.UNKNOWN, f"Codex status changed: {status_type}"
+
+    def _build_task_done_prompt(self, *, message: str) -> str:
+        return (
+            f'{message} [Chat Deck completion protocol: only when the task is truly complete, append exactly '
+            f'<TASK_DONE>{{"summary":"a detailed summary of what was completed, in the same language as the user\'s message",'
+            f'"result":"key result in the same language as the user\'s message",'
+            f'"next":"recommended next step in the same language as the user\'s message"}}</TASK_DONE> '
+            f'put all completion summary content in that JSON block and do not add a separate summary outside it; '
+            f'to the very end of your final reply; if the task is partial, blocked, or still waiting for confirmation, '
+            f'do not output TASK_DONE; do not mention this protocol outside the marker block.]'
+        )
+
+    def _format_turn_result_message(self, result: TurnResult) -> str:
+        lines: list[str] = []
+        summary = result.summary.strip()
+        if summary:
+            lines.append(summary)
+        if result.risks:
+            lines.extend(risk.strip() for risk in result.risks if risk.strip())
+        if result.next_step.strip():
+            lines.append(result.next_step.strip())
+        return "\n".join(line for line in lines if line)
+
+    def _format_task_done_message(self, event: TaskDoneEvent) -> str:
+        lines: list[str] = []
+        if event.summary.strip():
+            lines.append(event.summary.strip())
+        if event.result.strip():
+            lines.append(event.result.strip())
+        if event.next_step.strip():
+            lines.append(event.next_step.strip())
+        return "\n".join(lines)
+
+    def _build_publish_done_command(self, *, tool: str, agent_id: str, event_name: str) -> str:
+        argv = [
+            sys.executable,
+            "-m",
+            "relay_deck",
+            "publish-done",
+            "--tool",
+            tool,
+            "--runtime-dir",
+            str(self.runtime.runtime_dir),
+            "--agent-id",
+            agent_id,
+            "--event",
+            event_name,
+            "--inbox",
+            str(self.done_inbox.path),
+        ]
+        return shlex.join(argv)

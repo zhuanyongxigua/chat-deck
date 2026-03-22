@@ -42,6 +42,7 @@ class RegistryTests(unittest.TestCase):
         record = self.registry.get("abc123")
         assert record is not None
         self.assertEqual(record.transcript[-1].text, "streaming output")
+        self.assertEqual(record.last_summary, "")
 
     def test_started_event_persists_tmux_session_name(self) -> None:
         self.registry.apply_event(
@@ -117,6 +118,65 @@ class RegistryTests(unittest.TestCase):
         self.assertFalse(record.completed)
         self.assertEqual(record.state, AgentState.WORKING)
 
+    def test_completed_event_does_not_use_recent_output_as_chat_summary(self) -> None:
+        self.registry.apply_event(
+            AgentEvent(
+                type=EventType.MESSAGE_SENT,
+                agent_id="abc123",
+                message="summarize the latest changes",
+                state=AgentState.WORKING,
+            )
+        )
+        self.registry.apply_event(
+            AgentEvent(
+                type=EventType.OUTPUT,
+                agent_id="abc123",
+                message="Updated auth middleware and fixed the flaky login tests.",
+                state=AgentState.WORKING,
+                payload={"stream": "pane"},
+            )
+        )
+        self.registry.apply_event(
+            AgentEvent(
+                type=EventType.COMPLETED,
+                agent_id="abc123",
+                message="Codex completed its current turn",
+                state=AgentState.COMPLETED,
+            )
+        )
+        record = self.registry.get("abc123")
+        assert record is not None
+        self.assertEqual(record.last_summary, "")
+        self.assertEqual(record.chat_transcript[-1].text, "> summarize the latest changes")
+
+    def test_summary_updated_prevents_generic_completion_line(self) -> None:
+        self.registry.apply_event(
+            AgentEvent(
+                type=EventType.MESSAGE_SENT,
+                agent_id="abc123",
+                message="finish the task",
+                state=AgentState.WORKING,
+            )
+        )
+        self.registry.apply_event(
+            AgentEvent(
+                type=EventType.SUMMARY_UPDATED,
+                agent_id="abc123",
+                message="Added API retries and updated tests.",
+            )
+        )
+        self.registry.apply_event(
+            AgentEvent(
+                type=EventType.COMPLETED,
+                agent_id="abc123",
+                message="Codex completed its current turn",
+                state=AgentState.COMPLETED,
+            )
+        )
+        record = self.registry.get("abc123")
+        assert record is not None
+        self.assertEqual(record.chat_transcript[-1].text, "Added API retries and updated tests.")
+
     def test_status_bar_text_uses_tokens(self) -> None:
         self.registry.apply_event(
             AgentEvent(
@@ -128,6 +188,18 @@ class RegistryTests(unittest.TestCase):
         )
         bar_text = self.registry.status_bar_text()
         self.assertIn("api-agent:C", bar_text)
+
+    def test_status_bar_text_maps_waiting_to_working_token(self) -> None:
+        self.registry.apply_event(
+            AgentEvent(
+                type=EventType.STATE_CHANGED,
+                agent_id="abc123",
+                message="waiting for approval",
+                state=AgentState.WAITING,
+            )
+        )
+        bar_text = self.registry.status_bar_text()
+        self.assertIn("api-agent:W", bar_text)
 
 
 if __name__ == "__main__":

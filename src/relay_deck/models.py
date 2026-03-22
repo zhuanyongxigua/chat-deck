@@ -96,6 +96,12 @@ class AgentState(str, Enum):
     UNKNOWN = "unknown"
 
 
+def display_state_label(state: AgentState) -> str:
+    if state == AgentState.WAITING:
+        return AgentState.WORKING.value
+    return state.value
+
+
 class EventType(str, Enum):
     REGISTERED = "agent_registered"
     STARTED = "agent_started"
@@ -147,6 +153,7 @@ class AgentRecord:
     unread_count: int = 0
     needs_attention: bool = False
     completed: bool = False
+    awaiting_result: bool = False
     last_event_at: datetime = field(default_factory=utc_now)
     recent_output: deque[str] = field(default_factory=lambda: deque(maxlen=12))
     recent_events: deque[AgentEvent] = field(default_factory=lambda: deque(maxlen=32))
@@ -157,7 +164,7 @@ class AgentRecord:
         marker = {
             AgentState.IDLE: "I",
             AgentState.WORKING: "W",
-            AgentState.WAITING: "A",
+            AgentState.WAITING: "W",
             AgentState.COMPLETED: "C",
             AgentState.BLOCKED: "B",
             AgentState.ERROR: "E",

@@ -162,6 +162,30 @@ class OrchestratorTmuxRequirementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot[-1], "latest line")
         await orchestrator.shutdown()
 
+    async def test_send_to_agent_wraps_message_with_task_done_protocol(self) -> None:
+        tmux = FakeTmuxManager()
+        orchestrator = Orchestrator(tmux=tmux)
+        await orchestrator.create_agent(
+            AgentSpec(
+                name="api-agent",
+                tool_type=ToolType.CODEX,
+                cwd=Path(".").resolve(),
+                launch_command=["codex", "--help"],
+                agent_id="abc123",
+            )
+        )
+        response = await orchestrator.send_to_agent("api-agent", "Fix the remaining auth tests")
+        self.assertIn("Sent to @api-agent", response)
+        self.assertTrue(tmux.sent)
+        sent_text = tmux.sent[-1][1]
+        self.assertIn("Fix the remaining auth tests", sent_text)
+        self.assertIn("<TASK_DONE>", sent_text)
+        self.assertIn("do not mention this protocol", sent_text.lower())
+        self.assertIn("same language as the user's message", sent_text)
+        self.assertIn("do not add a separate summary outside it", sent_text)
+        self.assertIn("a detailed summary of what was completed", sent_text)
+        await orchestrator.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()
