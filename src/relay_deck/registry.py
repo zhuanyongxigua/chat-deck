@@ -87,12 +87,15 @@ class AgentRegistry:
         elif event.type == EventType.SUMMARY_UPDATED:
             record.last_summary = event.message
             record.unread_count += 1
+            if event.message:
+                record.chat_transcript.append(ConsoleLine(text=event.message, style="white"))
         elif event.type == EventType.MESSAGE_SENT:
             record.state = AgentState.WORKING
             record.needs_attention = False
             record.completed = False
             if not record.recent_output and not record.last_summary:
                 record.display_name = derive_display_name(event.message, record.display_name or humanize_handle(record.name))
+            record.chat_transcript.append(ConsoleLine(text=f"> {event.message}", style="bold cyan"))
         elif event.type == EventType.STATE_CHANGED and event.state is not None:
             record.state = event.state
             record.needs_attention = event.state in {
@@ -107,12 +110,14 @@ class AgentRegistry:
             record.needs_attention = False
             if event.message and not record.last_summary:
                 record.last_summary = event.message
+                record.chat_transcript.append(ConsoleLine(text=event.message, style="bold green"))
             record.unread_count += 1
         elif event.type == EventType.ERROR:
             record.state = AgentState.ERROR
             record.needs_attention = True
             if event.message:
                 record.last_summary = event.message
+                record.chat_transcript.append(ConsoleLine(text=event.message, style="bold red"))
             record.unread_count += 1
 
         if event.payload.get("branch"):

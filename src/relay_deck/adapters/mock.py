@@ -60,7 +60,7 @@ class MockAdapter(AgentAdapter):
             AgentEvent(
                 type=EventType.SUMMARY_UPDATED,
                 agent_id=self.spec.agent_id,
-                message=f"Last task: {message}",
+                message=f"Handled: {message}",
             )
         )
         await self.emit(
@@ -84,4 +84,3 @@ class MockAdapter(AgentAdapter):
 
     async def stop(self) -> None:
         self._closed = True
-

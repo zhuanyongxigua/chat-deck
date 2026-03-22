@@ -29,8 +29,10 @@ class AppSelectionTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.1)
             record = app.orchestrator.registry.get(app._selected_agent_id or "")
             assert record is not None
-            transcript_text = "\n".join(line.text for line in record.transcript)
-            self.assertIn("Handled: continue with the remaining work", transcript_text)
+            chat_text = "\n".join(line.text for line in record.chat_transcript)
+            self.assertIn("> continue with the remaining work", chat_text)
+            self.assertIn("Handled: continue with the remaining work", chat_text)
+            self.assertNotIn("Mock agent working", chat_text)
 
     async def test_controller_command_from_agent_view_returns_to_controller(self) -> None:
         app = RelayDeckApp(demo=True)
@@ -91,6 +93,14 @@ class AppSelectionTests(unittest.IsolatedAsyncioTestCase):
             cards = list(sidebar.query(AgentCard))
             self.assertEqual(len(cards), 2)
             self.assertEqual([card.record.name for card in cards], ["one", "two"])
+
+    async def test_footer_stack_lives_under_workspace_not_sidebar(self) -> None:
+        app = RelayDeckApp(demo=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            footer = app.query_one("#footer-stack")
+            self.assertIsNotNone(footer.parent)
+            self.assertEqual(footer.parent.id, "workspace")
 
 
 if __name__ == "__main__":

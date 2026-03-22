@@ -7,6 +7,7 @@ from pathlib import Path
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.widgets import Input, RichLog, Static
 
 from relay_deck.models import AgentEvent, AgentSpec, AgentState, EventType, ToolType
@@ -21,6 +22,10 @@ class RelayDeckApp(App[None]):
     Screen {
         layout: vertical;
         background: rgb(11, 17, 24);
+        overflow-x: hidden;
+        overflow-y: hidden;
+        scrollbar-size-vertical: 0;
+        scrollbar-size-horizontal: 0;
     }
 
     #status-bar {
@@ -36,17 +41,33 @@ class RelayDeckApp(App[None]):
         height: 1fr;
         margin: 0;
         padding: 0;
+        overflow-x: hidden;
+        overflow-y: hidden;
+        scrollbar-size-vertical: 0;
+        scrollbar-size-horizontal: 0;
     }
 
     #agent-sidebar {
         width: 40;
-        height: 1fr;
+        height: 100%;
         min-width: 32;
         max-width: 48;
         padding: 0;
         background: rgb(14, 22, 31);
         border-right: solid rgb(42, 62, 82);
         overflow-y: auto;
+    }
+
+    #workspace {
+        width: 1fr;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        background: rgb(15, 24, 34);
+        overflow-x: hidden;
+        overflow-y: hidden;
+        scrollbar-size-vertical: 0;
+        scrollbar-size-horizontal: 0;
     }
 
     #agent-sidebar-placeholder {
@@ -65,6 +86,10 @@ class RelayDeckApp(App[None]):
         padding: 1 0 0 1;
         margin: 0;
         background: rgb(15, 24, 34);
+        overflow-x: hidden;
+        overflow-y: hidden;
+        scrollbar-size-vertical: 0;
+        scrollbar-size-horizontal: 0;
     }
 
     #workspace-header {
@@ -85,7 +110,6 @@ class RelayDeckApp(App[None]):
     }
 
     #footer-stack {
-        dock: bottom;
         height: 4;
         margin: 0;
         padding: 0;
@@ -168,38 +192,38 @@ class RelayDeckApp(App[None]):
         self.orchestrator = Orchestrator()
         self._event_queue: asyncio.Queue[AgentEvent] | None = None
         self._event_task: asyncio.Task[None] | None = None
+        self._animation_timer = None
         self._animation_tick = 0
         self._sidebar_visible = True
         self._selected_agent_id: str | None = None
         self._controller_history: list[tuple[str, str]] = []
-        self._selected_snapshot: list[str] = []
-        self._detail_task: asyncio.Task[None] | None = None
         self._footer_message = ""
 
     def compose(self) -> ComposeResult:
         yield StatusBar()
         with Horizontal(id="body"):
             yield AgentSidebar()
-            with Vertical(id="main-column"):
-                yield Static(id="workspace-header")
-                yield RichLog(id="controller-log", markup=True, wrap=True, auto_scroll=True)
-        with Vertical(id="footer-stack"):
-            with Container(id="input-bar"):
-                with Horizontal(id="input-row"):
-                    yield Static(">", id="input-prompt")
-                    yield HistoryInput(
-                        placeholder="Type /new, /attach or @agent-name ...",
-                        id="command-input",
-                        compact=True,
-                    )
-            yield Static("", id="footer-message")
+            with Vertical(id="workspace"):
+                with Vertical(id="main-column"):
+                    yield Static(id="workspace-header")
+                    yield RichLog(id="controller-log", markup=True, wrap=True, auto_scroll=True)
+                with Vertical(id="footer-stack"):
+                    with Container(id="input-bar"):
+                        with Horizontal(id="input-row"):
+                            yield Static(">", id="input-prompt")
+                            yield HistoryInput(
+                                placeholder="Type /new, /attach or @agent-name ...",
+                                id="command-input",
+                                compact=True,
+                            )
+                    yield Static("", id="footer-message")
 
     async def on_mount(self) -> None:
         await self.orchestrator.start()
         self._focus_input()
         self._event_queue = await self.orchestrator.bus.subscribe()
         self._event_task = asyncio.create_task(self._consume_events())
-        self.set_interval(0.2, self._advance_animation)
+        self._animation_timer = self.set_interval(0.2, self._advance_animation)
         self._write_system(
             "Commands: /help, /agents, /new <codex|claude> <name> <cwd>, /attach [agent-name], @agent-name <message>"
         )
@@ -214,10 +238,9 @@ class RelayDeckApp(App[None]):
         self._refresh_all()
 
     async def on_unmount(self) -> None:
-        if self._detail_task is not None:
-            self._detail_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._detail_task
+        if self._animation_timer is not None:
+            self._animation_timer.stop()
+            self._animation_timer = None
         if self._event_task is not None:
             self._event_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -241,7 +264,6 @@ class RelayDeckApp(App[None]):
             return
         if self._selected_agent_id is not None and (raw.startswith("/") or raw.startswith("@")):
             self._selected_agent_id = None
-            self._selected_snapshot = []
             self._render_main_log()
         if self._selected_agent_id is not None and not raw.startswith("/") and not raw.startswith("@"):
             await self._send_to_selected_agent(raw)
@@ -287,7 +309,6 @@ class RelayDeckApp(App[None]):
         if self._selected_agent_id is None:
             return
         self._selected_agent_id = None
-        self._selected_snapshot = []
         self._render_main_log()
         self._refresh_all()
         self._focus_input()
@@ -323,12 +344,10 @@ class RelayDeckApp(App[None]):
         records = self.orchestrator.registry.list()
         if self._selected_agent_id is not None and self.orchestrator.registry.get(self._selected_agent_id) is None:
             self._selected_agent_id = None
-            self._selected_snapshot = []
             self._render_main_log()
         self.query_one(StatusBar).set_records(records, self._animation_tick)
         self.query_one(AgentSidebar).set_records(records, self._animation_tick, self._selected_agent_id)
         self._update_workspace_header()
-        self._queue_detail_refresh()
 
     def _write_user(self, text: str) -> None:
         self._controller_history.append((f"> {text}", "bold cyan"))
@@ -371,7 +390,8 @@ class RelayDeckApp(App[None]):
 
     def _advance_animation(self) -> None:
         self._animation_tick += 1
-        self._refresh_all()
+        with contextlib.suppress(NoMatches):
+            self._refresh_all()
 
     def _select_agent(self, agent_id: str) -> None:
         record = self.orchestrator.registry.get(agent_id)
@@ -379,7 +399,6 @@ class RelayDeckApp(App[None]):
             self._write_system("Selected agent is no longer available")
             return
         self._selected_agent_id = agent_id
-        self._selected_snapshot = []
         self.orchestrator.registry.mark_read(agent_id)
         self._render_main_log()
         self._refresh_all()
@@ -397,25 +416,6 @@ class RelayDeckApp(App[None]):
         header.update(
             f"@{record.name}  {record.tool_type.client_label}  {record.state.value}  Esc returns to controller  Ctrl+T opens tmux"
         )
-
-    def _queue_detail_refresh(self) -> None:
-        if self._selected_agent_id is None:
-            if self._detail_task is not None and not self._detail_task.done():
-                self._detail_task.cancel()
-            return
-        if self._detail_task is not None and not self._detail_task.done():
-            return
-        self._detail_task = asyncio.create_task(self._refresh_selected_detail())
-
-    async def _refresh_selected_detail(self) -> None:
-        agent_id = self._selected_agent_id
-        if agent_id is None:
-            return
-        snapshot = await self.orchestrator.capture_agent_snapshot_by_id(agent_id, lines=160)
-        if agent_id != self._selected_agent_id:
-            return
-        self._selected_snapshot = snapshot
-        self._render_main_log()
 
     def _focus_input(self) -> None:
         self.query_one(HistoryInput).focus()
@@ -467,14 +467,11 @@ class RelayDeckApp(App[None]):
                 log.write(Text(text, style=style))
             self._update_input_placeholder()
             return
-        if self._selected_snapshot:
-            for line in self._selected_snapshot:
-                log.write(Text(line, style="white"))
-        elif record.transcript:
-            for line in record.transcript:
+        if record.chat_transcript:
+            for line in record.chat_transcript:
                 log.write(Text(line.text, style=line.style))
         else:
-            log.write(Text(f"@{record.name} selected. Waiting for tmux pane output...", style="dim"))
+            log.write(Text(f"@{record.name} selected. Waiting for the next agent result...", style="dim"))
         self._update_input_placeholder()
 
     async def _send_to_selected_agent(self, text: str) -> None:

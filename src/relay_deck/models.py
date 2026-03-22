@@ -151,6 +151,7 @@ class AgentRecord:
     recent_output: deque[str] = field(default_factory=lambda: deque(maxlen=12))
     recent_events: deque[AgentEvent] = field(default_factory=lambda: deque(maxlen=32))
     transcript: deque[ConsoleLine] = field(default_factory=lambda: deque(maxlen=400))
+    chat_transcript: deque[ConsoleLine] = field(default_factory=lambda: deque(maxlen=200))
 
     def bar_token(self) -> str:
         marker = {
