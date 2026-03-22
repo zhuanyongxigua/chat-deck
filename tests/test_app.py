@@ -2,11 +2,14 @@ import asyncio
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, patch
 
+from textual.geometry import Offset
+from textual.selection import Selection
 from textual.widgets import Input, Static
 
 from relay_deck.app import RelayDeckApp
-from relay_deck.models import AgentSpec, ToolType
+from relay_deck.models import AgentEvent, AgentSpec, AgentState, EventType, ToolType
 from relay_deck.widgets.agent_sidebar import AgentCard, AgentSidebar
 from relay_deck.widgets.history_input import HistoryInput
 
@@ -161,6 +164,160 @@ class AppSelectionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertGreater(app._sidebar_width_percent, 40.0)
                 sidebar = app.query_one(AgentSidebar)
                 self.assertTrue(str(sidebar.styles.width))
+
+    async def test_ctrl_c_copies_selected_input_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = RelayDeckApp(
+                demo=True,
+                history_path=Path(temp_dir) / ".chat-deck" / "command-history.txt",
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                input_widget = app.query_one(HistoryInput)
+                input_widget.value = "copy this line"
+                input_widget.select_all()
+                with patch.object(app, "_write_system_clipboard", return_value=True):
+                    app.action_copy_selection()
+                self.assertEqual(app.clipboard, "copy this line")
+
+    async def test_ctrl_c_copies_selected_chat_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = RelayDeckApp(
+                demo=False,
+                history_path=Path(temp_dir) / ".chat-deck" / "command-history.txt",
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                app._controller_history = [("copy me", "white")]
+                app._render_main_log()
+                log = app.query_one("#controller-log")
+                app.screen.selections[log] = Selection.from_offsets(Offset(0, 0), Offset(7, 0))
+                with patch.object(log, "get_selection", return_value=("copy me", "\n")):
+                    with patch.object(app, "_write_system_clipboard", return_value=True):
+                        app.action_copy_selection()
+                self.assertEqual(app.clipboard, "copy me")
+
+    async def test_ctrl_v_pastes_clipboard_into_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = RelayDeckApp(
+                demo=True,
+                history_path=Path(temp_dir) / ".chat-deck" / "command-history.txt",
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                input_widget = app.query_one(HistoryInput)
+                input_widget.value = ""
+                with patch.object(app, "_read_clipboard_text", return_value="pasted from clipboard"):
+                    app.action_paste_clipboard()
+                self.assertEqual(input_widget.value, "pasted from clipboard")
+
+    async def test_large_paste_collapses_into_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = RelayDeckApp(
+                demo=True,
+                history_path=Path(temp_dir) / ".chat-deck" / "command-history.txt",
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                input_widget = app.query_one(HistoryInput)
+                large_text = "x" * 1225
+                with patch.object(app, "_read_clipboard_text", return_value=large_text):
+                    app.action_paste_clipboard()
+                self.assertEqual(input_widget.value, "[Pasted Content 1225 chars]")
+                self.assertEqual(input_widget.expand_value(), large_text)
+
+    async def test_collapsed_paste_expands_before_agent_send(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = RelayDeckApp(
+                demo=True,
+                history_path=Path(temp_dir) / ".chat-deck" / "command-history.txt",
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await pilot.press("ctrl+1")
+                await pilot.pause()
+                input_widget = app.query_one(HistoryInput)
+                large_text = "x" * 1225
+                input_widget.insert_pasted_text(large_text)
+                send_mock = AsyncMock(return_value="Sent to @demo-codex: [Pasted Content 1225 chars]")
+                app.orchestrator.send_to_agent = send_mock
+
+                await input_widget.action_submit()
+                await pilot.pause()
+
+                send_mock.assert_awaited_once_with(
+                    "demo-codex",
+                    large_text,
+                    display_message="[Pasted Content 1225 chars]",
+                )
+                self.assertEqual(input_widget.value, "")
+
+    async def test_selected_agent_shows_spinner_on_pending_user_message(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = RelayDeckApp(
+                demo=False,
+                history_path=Path(temp_dir) / ".chat-deck" / "command-history.txt",
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                agent_id = await app.orchestrator.create_agent(
+                    AgentSpec(name="worker", tool_type=ToolType.MOCK, cwd=Path(".").resolve())
+                )
+                app.orchestrator.registry.apply_event(
+                    AgentEvent(
+                        type=EventType.MESSAGE_SENT,
+                        agent_id=agent_id,
+                        message="finish the task",
+                        state=AgentState.WORKING,
+                    )
+                )
+                app._select_agent(agent_id)
+                await pilot.pause()
+
+                log = app.query_one("#controller-log", Static)
+                self.assertIn("> ◐ finish the task", str(log.render()))
+
+    async def test_spinner_disappears_after_summary_arrives(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = RelayDeckApp(
+                demo=False,
+                history_path=Path(temp_dir) / ".chat-deck" / "command-history.txt",
+            )
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                agent_id = await app.orchestrator.create_agent(
+                    AgentSpec(name="worker", tool_type=ToolType.MOCK, cwd=Path(".").resolve())
+                )
+                app.orchestrator.registry.apply_event(
+                    AgentEvent(
+                        type=EventType.MESSAGE_SENT,
+                        agent_id=agent_id,
+                        message="finish the task",
+                        state=AgentState.WORKING,
+                    )
+                )
+                app.orchestrator.registry.apply_event(
+                    AgentEvent(
+                        type=EventType.SUMMARY_UPDATED,
+                        agent_id=agent_id,
+                        message="Task completed successfully.",
+                    )
+                )
+                app.orchestrator.registry.apply_event(
+                    AgentEvent(
+                        type=EventType.STATE_CHANGED,
+                        agent_id=agent_id,
+                        message="done",
+                        state=AgentState.COMPLETED,
+                    )
+                )
+                app._select_agent(agent_id)
+                await pilot.pause()
+
+                log = app.query_one("#controller-log", Static)
+                rendered = str(log.render())
+                self.assertIn("> finish the task", rendered)
+                self.assertNotIn("> ◐ finish the task", rendered)
 
     def test_history_input_persists_only_the_latest_limit(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

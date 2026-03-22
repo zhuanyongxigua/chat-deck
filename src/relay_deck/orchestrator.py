@@ -96,7 +96,7 @@ class Orchestrator:
         await adapter.start()
         return agent_id
 
-    async def send_to_agent(self, agent_name: str, message: str) -> str:
+    async def send_to_agent(self, agent_name: str, message: str, *, display_message: str | None = None) -> str:
         record = self.registry.get_by_name(agent_name)
         if record is None:
             return f"Unknown agent: {agent_name}"
@@ -108,8 +108,9 @@ class Orchestrator:
             wire_message = self._build_task_done_prompt(
                 message=message,
             )
-        await adapter.send(wire_message, display_message=message)
-        return f"Sent to @{agent_name}: {message}"
+        visible_message = display_message or message
+        await adapter.send(wire_message, display_message=visible_message)
+        return f"Sent to @{agent_name}: {visible_message}"
 
     async def attach_agent_session(self, agent_name: str) -> str:
         record = self.registry.get_by_name(agent_name)

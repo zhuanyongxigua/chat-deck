@@ -11,6 +11,8 @@ def default_history_path() -> Path:
 
 
 class HistoryInput(Input):
+    PASTE_PREVIEW_THRESHOLD = 120
+
     BINDINGS = [
         *Input.BINDINGS,
         Binding("up", "history_previous", "Previous history", show=False),
@@ -30,6 +32,7 @@ class HistoryInput(Input):
         self._history: list[str] = []
         self._history_index: int | None = None
         self._history_draft = ""
+        self._collapsed_pastes: dict[str, str] = {}
         self._load_history()
 
     def remember(self, value: str) -> None:
@@ -72,6 +75,49 @@ class HistoryInput(Input):
     def _apply_history_value(self, value: str) -> None:
         self.value = value
         self.cursor_position = len(self.value)
+
+    def insert_pasted_text(self, text: str) -> None:
+        if not text:
+            return
+        start, end = self.selection
+        if self._should_collapse_paste(text):
+            placeholder = self._build_paste_placeholder(text)
+            self._collapsed_pastes[placeholder] = text
+            self.replace(placeholder, start, end)
+            return
+        self.replace(text, start, end)
+
+    def expand_value(self, value: str | None = None) -> str:
+        expanded = self.value if value is None else value
+        for placeholder, original in sorted(self._collapsed_pastes.items(), key=lambda item: len(item[0]), reverse=True):
+            expanded = expanded.replace(placeholder, original)
+        return expanded
+
+    def clear_collapsed_pastes(self) -> None:
+        self._collapsed_pastes.clear()
+
+    def _on_paste(self, event) -> None:
+        self.insert_pasted_text(event.text)
+        event.stop()
+
+    def _should_collapse_paste(self, text: str) -> bool:
+        return "\n" in text or len(text) >= self.PASTE_PREVIEW_THRESHOLD
+
+    def _build_paste_placeholder(self, text: str) -> str:
+        length = len(text)
+        base = f"[Pasted Content {length} chars]"
+        if base not in self._collapsed_pastes:
+            return base
+        if self._collapsed_pastes.get(base) == text:
+            return base
+        counter = 2
+        while True:
+            candidate = f"[Pasted Content {length} chars #{counter}]"
+            if candidate not in self._collapsed_pastes:
+                return candidate
+            if self._collapsed_pastes.get(candidate) == text:
+                return candidate
+            counter += 1
 
     def _load_history(self) -> None:
         try:

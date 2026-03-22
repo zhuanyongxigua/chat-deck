@@ -80,12 +80,8 @@ class AgentCard(Static):
 
     def _border_style(self, state: AgentState, active: bool) -> str:
         if active:
-            return "#7FB3FF"
-        if state == AgentState.ERROR:
-            return "red"
-        if state == AgentState.COMPLETED:
-            return "green"
-        return "#3E7F5D"
+            return "#3E7F5D"
+        return "#7FB3FF"
 
 
 class AgentSidebar(VerticalScroll):

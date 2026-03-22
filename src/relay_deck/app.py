@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import shutil
+import subprocess
+import sys
 from pathlib import Path
+from typing import Iterable
 
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
-from textual.widgets import Input, RichLog, Static
+from textual.widgets import Input, Static
 
 from relay_deck.models import AgentEvent, AgentSpec, AgentState, EventType, ToolType, display_state_label
 from relay_deck.orchestrator import Orchestrator
@@ -53,6 +57,8 @@ class SidebarResizer(Static):
 
 
 class RelayDeckApp(App[None]):
+    WORKING_SPINNER_FRAMES = ("◐", "◓", "◑", "◒")
+
     CSS = """
     Screen {
         layout: vertical;
@@ -146,7 +152,7 @@ class RelayDeckApp(App[None]):
         padding: 0 1 0 0;
     }
 
-    #controller-log {
+    #log-scroll {
         height: 1fr;
         margin: 0;
         background: rgb(15, 24, 34);
@@ -156,8 +162,18 @@ class RelayDeckApp(App[None]):
         scrollbar-color-hover: rgb(62, 82, 102);
     }
 
+    #controller-log {
+        width: 1fr;
+        height: auto;
+        min-height: 100%;
+        margin: 0;
+        padding: 0;
+        background: rgb(15, 24, 34);
+        color: rgb(239, 241, 245);
+    }
+
     #footer-stack {
-        height: 4;
+        height: 5;
         margin: 0;
         padding: 0;
         background: rgb(11, 17, 24);
@@ -201,9 +217,10 @@ class RelayDeckApp(App[None]):
     }
 
     #footer-message {
-        height: 1;
+        height: 2;
         margin: 0 1;
         padding: 0;
+        content-align: left middle;
         color: rgb(209, 216, 224);
         background: rgb(11, 17, 24);
     }
@@ -217,6 +234,8 @@ class RelayDeckApp(App[None]):
         ("q", "quit", "Quit"),
         ("super+b,ctrl+b,b", "toggle_sidebar", "Toggle Sidebar"),
         ("super+0,ctrl+0,escape", "clear_selection", "Controller"),
+        ("ctrl+c", "copy_selection", "Copy"),
+        ("ctrl+v", "paste_clipboard", "Paste"),
         ("super+1,ctrl+1", "select_agent_slot(1)", "Select Agent 1"),
         ("super+2,ctrl+2", "select_agent_slot(2)", "Select Agent 2"),
         ("super+3,ctrl+3", "select_agent_slot(3)", "Select Agent 3"),
@@ -264,7 +283,8 @@ class RelayDeckApp(App[None]):
             with Vertical(id="workspace"):
                 with Vertical(id="main-column"):
                     yield Static(id="workspace-header")
-                    yield RichLog(id="controller-log", markup=True, wrap=True, auto_scroll=True)
+                    with VerticalScroll(id="log-scroll"):
+                        yield Static(id="controller-log")
                 with Vertical(id="footer-stack"):
                     with Container(id="input-bar"):
                         with Horizontal(id="input-row"):
@@ -311,23 +331,25 @@ class RelayDeckApp(App[None]):
         await self.orchestrator.shutdown()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
-        raw = event.value
+        display_text = event.value
         input_widget = self.query_one(HistoryInput)
-        input_widget.remember(raw)
+        actual_text = input_widget.expand_value(display_text)
+        input_widget.remember(display_text)
         input_widget.value = ""
-        if self._selected_agent_id is not None and not raw.startswith("/") and not raw.startswith("@") and not raw.strip():
+        input_widget.clear_collapsed_pastes()
+        if self._selected_agent_id is not None and not display_text.startswith("/") and not display_text.startswith("@") and not actual_text.strip():
             await self._send_to_selected_agent("")
             self._refresh_all()
             self._focus_input()
             return
-        if not raw.strip():
+        if not actual_text.strip():
             self._focus_input()
             return
-        if self._selected_agent_id is not None and not raw.startswith("/") and not raw.startswith("@"):
-            await self._send_to_selected_agent(raw)
+        if self._selected_agent_id is not None and not display_text.startswith("/") and not display_text.startswith("@"):
+            await self._send_to_selected_agent(actual_text, display_text=display_text)
         else:
-            self._write_user(raw)
-            result = self.orchestrator.router.parse(raw)
+            self._write_user(display_text)
+            result = self.orchestrator.router.parse(actual_text)
             if result.kind == "attach_agent":
                 await self._handle_attach_request(result.target)
             else:
@@ -348,6 +370,26 @@ class RelayDeckApp(App[None]):
     async def action_refresh_views(self) -> None:
         self._refresh_all()
         self._write_system("Views refreshed")
+
+    def action_copy_selection(self) -> None:
+        input_widget = self.query_one(HistoryInput)
+        copied_text = self.screen.get_selected_text() or input_widget.selected_text
+        if not copied_text:
+            self._set_footer_message("Nothing selected to copy")
+            return
+        self.copy_to_clipboard(copied_text)
+        self._write_system_clipboard(copied_text)
+        self._set_footer_message("Copied selection")
+
+    def action_paste_clipboard(self) -> None:
+        text = self._read_clipboard_text()
+        if not text:
+            self._set_footer_message("Clipboard is empty")
+            return
+        input_widget = self.query_one(HistoryInput)
+        input_widget.focus()
+        input_widget.insert_pasted_text(text)
+        self._set_footer_message("")
 
     async def action_toggle_sidebar(self) -> None:
         self._sidebar_visible = not self._sidebar_visible
@@ -417,13 +459,13 @@ class RelayDeckApp(App[None]):
         self._controller_history.append((f"> {text}", "bold cyan"))
         self._set_footer_message("")
         if self._selected_agent_id is None:
-            self.query_one(RichLog).write(Text(f"> {text}", style="bold cyan"))
+            self._render_main_log()
 
     def _write_system(self, text: str) -> None:
         self._controller_history.append((text, "white"))
         self._set_footer_message(text, error=self._looks_like_error(text))
         if self._selected_agent_id is None:
-            self.query_one(RichLog).write(Text(text, style="white"))
+            self._render_main_log()
 
     def _handle_event(self, event: AgentEvent) -> None:
         if event.type == EventType.CONTROLLER:
@@ -436,7 +478,7 @@ class RelayDeckApp(App[None]):
         if event.type == EventType.ERROR or event.state == AgentState.ERROR:
             self._set_footer_message(event.message, error=True)
         if self._selected_agent_id is None:
-            self.query_one(RichLog).write(Text(line, style=style))
+            self._render_main_log()
             return
         if event.agent_id == self._selected_agent_id:
             self._render_main_log()
@@ -456,6 +498,8 @@ class RelayDeckApp(App[None]):
         self._animation_tick += 1
         with contextlib.suppress(NoMatches):
             self._refresh_all()
+            if self._selected_agent_id is not None and self._selected_agent_needs_spinner():
+                self._render_main_log()
 
     def _select_agent(self, agent_id: str) -> None:
         record = self.orchestrator.registry.get(agent_id)
@@ -498,6 +542,42 @@ class RelayDeckApp(App[None]):
         sidebar = self.query_one(AgentSidebar)
         sidebar.styles.width = f"{self._sidebar_width_percent:.1f}%"
 
+    def _read_clipboard_text(self) -> str:
+        system_clipboard = self._read_system_clipboard()
+        if system_clipboard:
+            return system_clipboard
+        return self.clipboard
+
+    def _read_system_clipboard(self) -> str:
+        if sys.platform == "darwin" and shutil.which("pbpaste"):
+            try:
+                result = subprocess.run(
+                    ["pbpaste"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except OSError:
+                return ""
+            if result.returncode == 0:
+                return result.stdout
+        return ""
+
+    def _write_system_clipboard(self, text: str) -> bool:
+        if sys.platform == "darwin" and shutil.which("pbcopy"):
+            try:
+                result = subprocess.run(
+                    ["pbcopy"],
+                    input=text,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            except OSError:
+                return False
+            return result.returncode == 0
+        return False
+
     def _set_footer_message(self, text: str, *, error: bool = False) -> None:
         self._footer_message = text
         widget = self.query_one("#footer-message", Static)
@@ -530,28 +610,71 @@ class RelayDeckApp(App[None]):
         input_widget.placeholder = f"Message @{record.name} directly, or press Esc to return to controller"
 
     def _render_main_log(self) -> None:
-        log = self.query_one(RichLog)
-        log.clear()
+        log = self.query_one("#controller-log", Static)
+        scroll = self.query_one("#log-scroll", VerticalScroll)
         if self._selected_agent_id is None:
-            for text, style in self._controller_history:
-                log.write(Text(text, style=style))
+            log.update(self._compose_lines(self._controller_history))
+            scroll.scroll_end(animate=False, immediate=True, x_axis=False)
             self._update_input_placeholder()
             return
         record = self.orchestrator.registry.get(self._selected_agent_id)
         if record is None:
             self._selected_agent_id = None
-            for text, style in self._controller_history:
-                log.write(Text(text, style=style))
+            log.update(self._compose_lines(self._controller_history))
+            scroll.scroll_end(animate=False, immediate=True, x_axis=False)
             self._update_input_placeholder()
             return
         if record.chat_transcript:
-            for line in record.chat_transcript:
-                log.write(Text(line.text, style=line.style))
+            log.update(self._compose_agent_chat(record))
         else:
-            log.write(Text(f"@{record.name} selected. Waiting for the next agent result...", style="dim"))
+            log.update(Text(f"@{record.name} selected. Waiting for the next agent result...", style="dim"))
+        scroll.scroll_end(animate=False, immediate=True, x_axis=False)
         self._update_input_placeholder()
 
-    async def _send_to_selected_agent(self, text: str) -> None:
+    def _compose_lines(self, lines: Iterable[tuple[str, str]]) -> Text:
+        content = Text()
+        for index, (text, style) in enumerate(lines):
+            if index:
+                content.append("\n")
+            content.append(text, style=style)
+        return content
+
+    def _compose_agent_chat(self, record) -> Text:
+        content = Text()
+        last_user_line_index = self._last_user_chat_line_index(record)
+        show_working_spinner = self._record_needs_spinner(record)
+        spinner = self.WORKING_SPINNER_FRAMES[self._animation_tick % len(self.WORKING_SPINNER_FRAMES)]
+
+        for index, line in enumerate(record.chat_transcript):
+            if index:
+                content.append("\n")
+            if show_working_spinner and index == last_user_line_index and line.text.startswith("> "):
+                content.append("> ", style="bold cyan")
+                content.append(spinner, style="bold green")
+                content.append(" ", style="bold cyan")
+                content.append(line.text[2:], style=line.style)
+                continue
+            content.append(line.text, style=line.style)
+        return content
+
+    def _last_user_chat_line_index(self, record) -> int | None:
+        for index in range(len(record.chat_transcript) - 1, -1, -1):
+            if record.chat_transcript[index].text.startswith("> "):
+                return index
+        return None
+
+    def _record_needs_spinner(self, record) -> bool:
+        return record.awaiting_result and record.state in {AgentState.WORKING, AgentState.WAITING}
+
+    def _selected_agent_needs_spinner(self) -> bool:
+        if self._selected_agent_id is None:
+            return False
+        record = self.orchestrator.registry.get(self._selected_agent_id)
+        if record is None:
+            return False
+        return self._record_needs_spinner(record)
+
+    async def _send_to_selected_agent(self, text: str, *, display_text: str | None = None) -> None:
         if self._selected_agent_id is None:
             return
         record = self.orchestrator.registry.get(self._selected_agent_id)
@@ -560,7 +683,7 @@ class RelayDeckApp(App[None]):
             self._selected_agent_id = None
             self._render_main_log()
             return
-        response = await self.orchestrator.send_to_agent(record.name, text)
+        response = await self.orchestrator.send_to_agent(record.name, text, display_message=display_text)
         if response.startswith("Unknown agent") or response.endswith("is not attached"):
             self._write_system(response)
             self._selected_agent_id = None
