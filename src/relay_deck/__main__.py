@@ -378,7 +378,7 @@ def _ensure_tmux_available(*, demo: bool, which=shutil.which) -> None:
     raise SystemExit(
         "tmux is required to run Relay Deck outside demo mode.\n"
         f"{_tmux_install_hint()}\n"
-        "Use `relay-deck --demo` if you only want to preview the UI.\n"
+        "Use `chat-deck --demo` if you only want to preview the UI.\n"
     )
 
 

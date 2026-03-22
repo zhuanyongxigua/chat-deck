@@ -4,9 +4,11 @@
 
 Chat Deck lets you manage multiple Claude Code and Codex agents from one terminal UI. Each agent runs in its own isolated tmux session and can work in a completely different directory. Instead of staring at raw terminal logs, you talk to the selected agent in a chat-style pane and receive structured task summaries back when work is done.
 
+![Chat Deck screenshot](./assets/chat-deck-screenshot.png)
+
 > Status: alpha / experimental
 >
-> Current package and CLI name: `relay-deck`
+> Package and CLI name: `chat-deck`
 
 [简体中文 README](./README.zh-CN.md)
 
@@ -110,13 +112,13 @@ which codex
 ## Run
 
 ```bash
-relay-deck
+chat-deck
 ```
 
 Demo mode still works without `tmux`:
 
 ```bash
-relay-deck --demo
+chat-deck --demo
 ```
 
 ---

@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "relay-deck"
+name = "chat-deck"
 version = "0.1.0"
 description = "Chat-first multi-agent TUI for Claude Code and Codex, built with Python, Textual, and tmux."
 readme = "README.md"
@@ -20,7 +20,7 @@ dev = [
 ]
 
 [project.scripts]
-relay-deck = "relay_deck.__main__:main"
+chat-deck = "relay_deck.__main__:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
