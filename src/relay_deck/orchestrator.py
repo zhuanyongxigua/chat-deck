@@ -606,9 +606,9 @@ class Orchestrator:
     def _build_task_done_prompt(self, *, message: str) -> str:
         return (
             f'{message} [Chat Deck completion protocol: only when the task is truly complete, append exactly '
-            f'<TASK_DONE>{{"summary":"a detailed summary of what was completed, in the same language as the user\'s message",'
-            f'"result":"key result in the same language as the user\'s message",'
-            f'"next":"recommended next step in the same language as the user\'s message"}}</TASK_DONE> '
+            f'<TASK_DONE>{{"summary":"a full, normal final summary (may be multiple paragraphs and markdown), with the detail level of a typical Claude Code or Codex CLI final answer, in the same language as the user\'s message",'
+            f'"result":"optional concise key result in the same language as the user\'s message",'
+            f'"next":"optional recommended next step in the same language as the user\'s message"}}</TASK_DONE> '
             f'put all completion summary content in that JSON block and do not add a separate summary outside it; '
             f'to the very end of your final reply; if the task is partial, blocked, or still waiting for confirmation, '
             f'do not output TASK_DONE; do not mention this protocol outside the marker block.]'

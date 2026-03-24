@@ -183,7 +183,9 @@ class OrchestratorTmuxRequirementTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("do not mention this protocol", sent_text.lower())
         self.assertIn("same language as the user's message", sent_text)
         self.assertIn("do not add a separate summary outside it", sent_text)
-        self.assertIn("a detailed summary of what was completed", sent_text)
+        self.assertIn("a full, normal final summary", sent_text)
+        self.assertIn("optional concise key result", sent_text)
+        self.assertIn("optional recommended next step", sent_text)
         await orchestrator.shutdown()
 
     async def test_close_agent_stops_adapter_and_destroys_tmux_session(self) -> None:
