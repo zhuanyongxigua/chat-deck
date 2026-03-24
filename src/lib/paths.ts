@@ -24,3 +24,7 @@ export function agentRuntimeDir(agentId: string): string {
 export function inboxFilePath(): string {
   return join(chatDeckDir(), "inbox.jsonl");
 }
+
+export function appStateFilePath(): string {
+  return join(chatDeckDir(), "app-state.json");
+}

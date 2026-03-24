@@ -6,6 +6,7 @@ import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { applyAgentSelection } from "./lib/agent-state";
+import { loadAppState, saveAppState, type PersistedAppState, type ViewState } from "./lib/app-state";
 import { interpretControllerMessage } from "./lib/controller";
 import { HISTORY_LIMIT, loadHistory, rememberHistory } from "./lib/history";
 import { readInboxEvents } from "./lib/inbox";
@@ -163,21 +164,27 @@ function messageViewKey(agentId: string | null): string {
   return agentId ?? "controller";
 }
 
-interface ViewState {
-  draft: string;
-  scrollTop: number;
-}
-
 export function ChatDeckApp() {
+  const initialAppStateRef = useRef<PersistedAppState | null>(null);
+  if (initialAppStateRef.current === null) {
+    initialAppStateRef.current = loadAppState();
+  }
+  const initialAppState = initialAppStateRef.current;
   const renderer = useRenderer();
   const { width, height } = useTerminalDimensions();
-  const [agents, setAgents] = useState<AgentRecord[]>([]);
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [controllerMessages, setControllerMessages] = useState<ChatMessage[]>(() => initialControllerMessages());
-  const [inputValue, setInputValue] = useState("");
+  const [agents, setAgents] = useState<AgentRecord[]>(() => initialAppState?.agents ?? []);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(() => initialAppState?.selectedAgentId ?? null);
+  const [controllerMessages, setControllerMessages] = useState<ChatMessage[]>(
+    () => initialAppState?.controllerMessages ?? initialControllerMessages(),
+  );
+  const [inputValue, setInputValue] = useState(() => {
+    const selected = initialAppState?.selectedAgentId ?? null;
+    const viewKey = messageViewKey(selected);
+    return initialAppState?.viewStates[viewKey]?.draft ?? "";
+  });
   const [footerText, setFooterText] = useState("");
   const [footerError, setFooterError] = useState(false);
-  const [sidebarVisible, setSidebarVisible] = useState(true);
+  const [sidebarVisible, setSidebarVisible] = useState(() => initialAppState?.sidebarVisible ?? true);
   const [animationTick, setAnimationTick] = useState(0);
   const [history, setHistory] = useState<string[]>(() => loadHistory(HISTORY_LIMIT));
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
@@ -188,9 +195,11 @@ export function ChatDeckApp() {
   const selectedAgentIdRef = useRef(selectedAgentId);
   const inputValueRef = useRef(inputValue);
   const historyRef = useRef(history);
-  const inboxOffsetRef = useRef(0);
+  const inboxOffsetRef = useRef(initialAppState?.inboxOffset ?? 0);
   const clipboardWarningShownRef = useRef(false);
-  const viewStatesRef = useRef<Record<string, ViewState>>({
+  const controllerMessagesRef = useRef(controllerMessages);
+  const sidebarVisibleRef = useRef(sidebarVisible);
+  const viewStatesRef = useRef<Record<string, ViewState>>(initialAppState?.viewStates ?? {
     controller: { draft: "", scrollTop: 0 },
   });
 
@@ -211,6 +220,14 @@ export function ChatDeckApp() {
   }, [history]);
 
   useEffect(() => {
+    controllerMessagesRef.current = controllerMessages;
+  }, [controllerMessages]);
+
+  useEffect(() => {
+    sidebarVisibleRef.current = sidebarVisible;
+  }, [sidebarVisible]);
+
+  useEffect(() => {
     const timer = setInterval(() => setAnimationTick((value) => value + 1), 200);
     return () => clearInterval(timer);
   }, []);
@@ -221,6 +238,18 @@ export function ChatDeckApp() {
     }, 700);
     return () => clearInterval(timer);
   }, []);
+
+  function persistAppState() {
+    saveAppState({
+      version: 1,
+      agents: agentsRef.current,
+      selectedAgentId: selectedAgentIdRef.current,
+      controllerMessages: controllerMessagesRef.current,
+      sidebarVisible: sidebarVisibleRef.current,
+      viewStates: viewStatesRef.current,
+      inboxOffset: inboxOffsetRef.current,
+    });
+  }
 
   const selectedAgent = useMemo(
     () => agents.find((agent) => agent.id === selectedAgentId) ?? null,
@@ -312,6 +341,30 @@ export function ChatDeckApp() {
     }, 0);
     return () => clearTimeout(timer);
   }, [renderer, selectedAgentId]);
+
+  useEffect(() => {
+    const currentView = messageViewKey(selectedAgentId);
+    setViewDraft(currentView, inputValue);
+
+    const timer = setTimeout(() => {
+      persistAppState();
+    }, 120);
+
+    return () => clearTimeout(timer);
+  }, [agents, controllerMessages, inputValue, selectedAgentId, sidebarVisible]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      rememberCurrentViewState(messageViewKey(selectedAgentIdRef.current));
+      persistAppState();
+    }, 1000);
+
+    return () => {
+      clearInterval(timer);
+      rememberCurrentViewState(messageViewKey(selectedAgentIdRef.current));
+      persistAppState();
+    };
+  }, []);
 
   async function pollAgents() {
     const current = agentsRef.current;
@@ -476,6 +529,7 @@ export function ChatDeckApp() {
 
     await destroyTmuxSession(target.sessionName);
     cleanupRuntimeFiles(target.runtimeFiles);
+    delete viewStatesRef.current[target.id];
     setAgents((previous) => previous.filter((agent) => agent.id !== target.id));
     if (selectedAgentIdRef.current === target.id) {
       selectAgent(null);
