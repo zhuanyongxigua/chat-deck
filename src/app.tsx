@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
-import { CliRenderEvents, TextAttributes, type KeyEvent } from "@opentui/core";
+import { CliRenderEvents, TextAttributes, type KeyEvent, type MouseEvent } from "@opentui/core";
 import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
@@ -164,6 +164,13 @@ function messageViewKey(agentId: string | null): string {
   return agentId ?? "controller";
 }
 
+function clampSidebarWidth(width: number, terminalWidth: number): number {
+  const minSidebarWidth = 24;
+  const minContentWidth = 48;
+  const maxSidebarWidth = Math.max(minSidebarWidth, terminalWidth - minContentWidth);
+  return Math.max(minSidebarWidth, Math.min(width, maxSidebarWidth));
+}
+
 export function ChatDeckApp() {
   const initialAppStateRef = useRef<PersistedAppState | null>(null);
   if (initialAppStateRef.current === null) {
@@ -185,6 +192,8 @@ export function ChatDeckApp() {
   const [footerText, setFooterText] = useState("");
   const [footerError, setFooterError] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(() => initialAppState?.sidebarVisible ?? true);
+  const [sidebarWidthOverride, setSidebarWidthOverride] = useState<number | null>(() => initialAppState?.sidebarWidth ?? null);
+  const [dividerActive, setDividerActive] = useState(false);
   const [animationTick, setAnimationTick] = useState(0);
   const [history, setHistory] = useState<string[]>(() => loadHistory(HISTORY_LIMIT));
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
@@ -199,6 +208,8 @@ export function ChatDeckApp() {
   const clipboardWarningShownRef = useRef(false);
   const controllerMessagesRef = useRef(controllerMessages);
   const sidebarVisibleRef = useRef(sidebarVisible);
+  const sidebarWidthRef = useRef(sidebarWidthOverride);
+  const dividerDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const viewStatesRef = useRef<Record<string, ViewState>>(initialAppState?.viewStates ?? {
     controller: { draft: "", scrollTop: 0 },
   });
@@ -228,6 +239,10 @@ export function ChatDeckApp() {
   }, [sidebarVisible]);
 
   useEffect(() => {
+    sidebarWidthRef.current = sidebarWidthOverride;
+  }, [sidebarWidthOverride]);
+
+  useEffect(() => {
     const timer = setInterval(() => setAnimationTick((value) => value + 1), 200);
     return () => clearInterval(timer);
   }, []);
@@ -246,6 +261,7 @@ export function ChatDeckApp() {
       selectedAgentId: selectedAgentIdRef.current,
       controllerMessages: controllerMessagesRef.current,
       sidebarVisible: sidebarVisibleRef.current,
+      sidebarWidth: sidebarWidthRef.current,
       viewStates: viewStatesRef.current,
       inboxOffset: inboxOffsetRef.current,
     });
@@ -744,6 +760,46 @@ export function ChatDeckApp() {
     setViewDraft(currentView, nextValue);
   }
 
+  function startSidebarResize(event: MouseEvent) {
+    dividerDragRef.current = {
+      startX: event.x,
+      startWidth: sidebarWidth,
+    };
+    setDividerActive(true);
+    renderer.setMousePointer("move");
+  }
+
+  function resizeSidebarFromMouse(event: MouseEvent) {
+    const drag = dividerDragRef.current;
+    if (!drag) {
+      return;
+    }
+    const delta = event.x - drag.startX;
+    setSidebarWidthOverride(clampSidebarWidth(drag.startWidth + delta, width));
+    setDividerActive(true);
+    renderer.setMousePointer("move");
+  }
+
+  function finishSidebarResize(pointer: "default" | "move") {
+    dividerDragRef.current = null;
+    setDividerActive(pointer === "move");
+    renderer.setMousePointer(pointer);
+  }
+
+  function handleGlobalDividerDrag(event: MouseEvent) {
+    if (!dividerDragRef.current) {
+      return;
+    }
+    resizeSidebarFromMouse(event);
+  }
+
+  function handleGlobalDividerRelease(pointer: "default" | "move") {
+    if (!dividerDragRef.current) {
+      return;
+    }
+    finishSidebarResize(pointer);
+  }
+
   useKeyboard((key: KeyEvent) => {
     if (key.ctrl && key.name === "c") {
       renderer.destroy();
@@ -797,7 +853,9 @@ export function ChatDeckApp() {
     }
   });
 
-  const sidebarWidth = sidebarVisible ? Math.max(32, Math.floor(width * 0.32)) : 0;
+  const sidebarWidth = sidebarVisible
+    ? clampSidebarWidth(sidebarWidthOverride ?? Math.floor(width * 0.32), width)
+    : 0;
   const statusBarText = agents.length
     ? agents
         .map((agent) => `${agent.name}:${stateToken(agent.state)}${agent.unreadCount ? "*" : ""}${agent.needsAttention ? "!" : ""}`)
@@ -824,7 +882,12 @@ export function ChatDeckApp() {
         </text>
       </box>
 
-      <box style={{ width: "100%", height: "100%", flexDirection: "row", backgroundColor: "transparent" }}>
+      <box
+        style={{ width: "100%", height: "100%", flexDirection: "row", backgroundColor: "transparent" }}
+        onMouseDrag={handleGlobalDividerDrag}
+        onMouseDragEnd={() => handleGlobalDividerRelease("default")}
+        onMouseUp={() => handleGlobalDividerRelease("default")}
+      >
         {sidebarVisible ? (
           <box
             style={{
@@ -873,7 +936,33 @@ export function ChatDeckApp() {
           </box>
         ) : null}
 
-        {sidebarVisible ? <box style={{ width: 1, height: "100%", border: ["left"], borderColor: "#2A3E52" }} /> : null}
+        {sidebarVisible ? (
+          <box
+            style={{
+              width: 1,
+              height: "100%",
+              border: ["left"],
+              borderColor: dividerActive ? "#7FB3FF" : "#2A3E52",
+            }}
+            onMouseOver={() => {
+              setDividerActive(true);
+              renderer.setMousePointer("move");
+            }}
+            onMouseOut={() => {
+              if (!dividerDragRef.current) {
+                setDividerActive(false);
+                renderer.setMousePointer("default");
+              }
+            }}
+            onMouseDown={startSidebarResize}
+            onMouseDragEnd={() => {
+              finishSidebarResize("default");
+            }}
+            onMouseUp={() => {
+              finishSidebarResize("move");
+            }}
+          />
+        ) : null}
 
         <box style={{ width: "100%", height: "100%", flexDirection: "column", backgroundColor: "transparent" }}>
           <box style={{ width: "100%", height: 1, paddingLeft: 1, backgroundColor: "transparent" }}>

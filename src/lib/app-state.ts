@@ -14,6 +14,7 @@ export interface PersistedAppState {
   selectedAgentId: string | null;
   controllerMessages: ChatMessage[];
   sidebarVisible: boolean;
+  sidebarWidth: number | null;
   viewStates: Record<string, ViewState>;
   inboxOffset: number;
 }
@@ -105,6 +106,7 @@ export function loadAppState(): PersistedAppState | null {
       selectedAgentId,
       controllerMessages,
       sidebarVisible: typeof raw.sidebarVisible === "boolean" ? raw.sidebarVisible : true,
+      sidebarWidth: typeof raw.sidebarWidth === "number" ? raw.sidebarWidth : null,
       viewStates: sanitizeViewStates(raw.viewStates),
       inboxOffset: typeof raw.inboxOffset === "number" ? raw.inboxOffset : 0,
     };
@@ -117,4 +119,3 @@ export function saveAppState(state: PersistedAppState): void {
   mkdirSync(chatDeckDir(), { recursive: true });
   writeFileSync(appStateFilePath(), `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
-

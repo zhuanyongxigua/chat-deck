@@ -67,6 +67,7 @@ describe("app state storage", () => {
       selectedAgentId: "agent-1",
       controllerMessages: [makeMessage({ id: "controller-1", content: "Commands..." })],
       sidebarVisible: false,
+      sidebarWidth: 44,
       viewStates: {
         controller: { draft: "controller draft", scrollTop: 3 },
         "agent-1": { draft: "agent draft", scrollTop: 12 },
@@ -88,6 +89,7 @@ describe("app state storage", () => {
       selectedAgentId: "agent-1",
       controllerMessages: [makeMessage()],
       sidebarVisible: true,
+      sidebarWidth: null,
       viewStates: { controller: { draft: "", scrollTop: 0 } },
       inboxOffset: 0,
     });
@@ -107,6 +109,7 @@ describe("app state storage", () => {
       selectedAgentId: "agent-1",
       controllerMessages: [makeMessage({ id: "controller-2" })],
       sidebarVisible: true,
+      sidebarWidth: null,
       viewStates: {
         controller: { draft: "", scrollTop: 0 },
         "agent-2": { draft: "saved", scrollTop: 8 },
