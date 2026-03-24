@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 
 import { applyAgentSelection } from "./lib/agent-state";
 import { loadAppState, saveAppState, type PersistedAppState, type ViewState } from "./lib/app-state";
+import { copyTextToClipboard } from "./lib/clipboard";
 import { interpretControllerMessage } from "./lib/controller";
 import { HISTORY_LIMIT, loadHistory, rememberHistory } from "./lib/history";
 import { readInboxEvents } from "./lib/inbox";
@@ -188,6 +189,7 @@ export function ChatDeckApp() {
     const viewKey = messageViewKey(selected);
     return initialAppState?.viewStates[viewKey]?.draft ?? "";
   });
+  const [clipboardNotice, setClipboardNotice] = useState("");
   const [footerText, setFooterText] = useState("");
   const [footerError, setFooterError] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(() => initialAppState?.sidebarVisible ?? true);
@@ -205,6 +207,7 @@ export function ChatDeckApp() {
   const historyRef = useRef(history);
   const inboxOffsetRef = useRef(initialAppState?.inboxOffset ?? 0);
   const clipboardWarningShownRef = useRef(false);
+  const lastCopiedSelectionRef = useRef("");
   const controllerMessagesRef = useRef(controllerMessages);
   const sidebarVisibleRef = useRef(sidebarVisible);
   const sidebarWidthRef = useRef(sidebarWidthOverride);
@@ -287,13 +290,34 @@ export function ChatDeckApp() {
   }, [inputValue]);
 
   useEffect(() => {
-    const handleSelection = () => {
+    if (!clipboardNotice) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      setClipboardNotice("");
+    }, 1600);
+    return () => clearTimeout(timer);
+  }, [clipboardNotice]);
+
+  useEffect(() => {
+    const copyCurrentSelection = () => {
       const selection = renderer.getSelection();
       const text = selection?.getSelectedText() ?? "";
       if (!text) {
+        lastCopiedSelectionRef.current = "";
         return;
       }
-      const copied = renderer.copyToClipboardOSC52(text);
+      if (text === lastCopiedSelectionRef.current) {
+        return;
+      }
+      const copied = copyTextToClipboard(text, {
+        osc52Copy: () => renderer.copyToClipboardOSC52(text),
+      });
+      if (copied) {
+        lastCopiedSelectionRef.current = text;
+        setClipboardNotice("Copied to clipboard");
+        return;
+      }
       if (!copied && !clipboardWarningShownRef.current) {
         clipboardWarningShownRef.current = true;
         setFooterText("Clipboard copy is unavailable in this terminal. Enable terminal clipboard access for OSC52.");
@@ -301,8 +325,17 @@ export function ChatDeckApp() {
       }
     };
 
+    const handleSelection = () => {
+      copyCurrentSelection();
+    };
+
+    const timer = setInterval(() => {
+      copyCurrentSelection();
+    }, 150);
+
     renderer.on(CliRenderEvents.SELECTION, handleSelection);
     return () => {
+      clearInterval(timer);
       renderer.off(CliRenderEvents.SELECTION, handleSelection);
     };
   }, [renderer]);
@@ -869,10 +902,21 @@ export function ChatDeckApp() {
   return (
     <box style={{ width: "100%", height: "100%", flexDirection: "column", backgroundColor: "transparent" }}>
       <box style={{ width: "100%", height: 2, flexDirection: "column", backgroundColor: "transparent" }}>
-        <box style={{ width: "100%", height: 1, paddingLeft: 1, backgroundColor: "transparent" }}>
+        <box
+          style={{
+            width: "100%",
+            height: 1,
+            paddingLeft: 1,
+            paddingRight: 1,
+            backgroundColor: "transparent",
+            flexDirection: "row",
+            justifyContent: "space-between",
+          }}
+        >
           <text fg="#EFF1F5" attributes={TextAttributes.BOLD}>
             {statusBarText}
           </text>
+          <text fg="#7FE5B2">{clipboardNotice}</text>
         </box>
         <box
           style={{
