@@ -26,6 +26,7 @@ import type { AgentRecord, AgentState, AgentTool, ChatMessage, RouterResult } fr
 
 const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"];
 const TOP_BAR_BACKGROUND = "#111821";
+const MESSAGE_SCROLLBOX_ID = "message-scrollbox";
 const COMMAND_SPECS: Array<{ command: string; description: string }> = [
   { command: "/help", description: "Show available commands" },
   { command: "/agents", description: "List current agents" },
@@ -158,6 +159,15 @@ function commandFooter(matches: Array<{ command: string; description: string }>,
   return `Commands: ${commands}\n${active?.description ?? ""}  Tab to autocomplete`;
 }
 
+function messageViewKey(agentId: string | null): string {
+  return agentId ?? "controller";
+}
+
+interface ViewState {
+  draft: string;
+  scrollTop: number;
+}
+
 export function ChatDeckApp() {
   const renderer = useRenderer();
   const { width, height } = useTerminalDimensions();
@@ -180,6 +190,9 @@ export function ChatDeckApp() {
   const historyRef = useRef(history);
   const inboxOffsetRef = useRef(0);
   const clipboardWarningShownRef = useRef(false);
+  const viewStatesRef = useRef<Record<string, ViewState>>({
+    controller: { draft: "", scrollTop: 0 },
+  });
 
   useEffect(() => {
     agentsRef.current = agents;
@@ -249,6 +262,56 @@ export function ChatDeckApp() {
       renderer.off(CliRenderEvents.SELECTION, handleSelection);
     };
   }, [renderer]);
+
+  function getMessageScrollbox(): { scrollTop: number } | null {
+    const renderable = renderer.root.findDescendantById(MESSAGE_SCROLLBOX_ID);
+    if (!renderable || typeof (renderable as { scrollTop?: unknown }).scrollTop !== "number") {
+      return null;
+    }
+    return renderable as unknown as { scrollTop: number };
+  }
+
+  function getViewState(viewKey: string): ViewState {
+    const existing = viewStatesRef.current[viewKey];
+    if (existing) {
+      return existing;
+    }
+    const created: ViewState = { draft: "", scrollTop: 0 };
+    viewStatesRef.current[viewKey] = created;
+    return created;
+  }
+
+  function setViewDraft(viewKey: string, draft: string) {
+    getViewState(viewKey).draft = draft;
+  }
+
+  function getViewDraft(viewKey: string): string {
+    return getViewState(viewKey).draft;
+  }
+
+  function rememberCurrentViewState(viewKey: string) {
+    const scrollbox = getMessageScrollbox();
+    const nextState = getViewState(viewKey);
+    nextState.draft = inputValueRef.current;
+    if (scrollbox) {
+      nextState.scrollTop = scrollbox.scrollTop;
+    }
+  }
+
+  function restoreScrollPosition(viewKey: string) {
+    const scrollbox = getMessageScrollbox();
+    if (!scrollbox) {
+      return;
+    }
+    scrollbox.scrollTop = getViewState(viewKey).scrollTop;
+  }
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      restoreScrollPosition(messageViewKey(selectedAgentId));
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [renderer, selectedAgentId]);
 
   async function pollAgents() {
     const current = agentsRef.current;
@@ -323,7 +386,11 @@ export function ChatDeckApp() {
 
   function selectAgent(agentId: string | null) {
     const previousSelectedId = selectedAgentIdRef.current;
+    rememberCurrentViewState(messageViewKey(previousSelectedId));
     setSelectedAgentId(agentId);
+    setInputValue(getViewDraft(messageViewKey(agentId)));
+    setHistoryIndex(null);
+    setHistoryDraft("");
     setAgents((previous) => applyAgentSelection(previous, previousSelectedId, agentId));
   }
 
@@ -557,12 +624,14 @@ export function ChatDeckApp() {
   }
 
   async function submitInput(rawValue?: string) {
+    const currentView = messageViewKey(selectedAgentIdRef.current);
     const currentValue = (rawValue ?? inputValueRef.current).trimEnd();
     const remembered = rememberHistory(historyRef.current, currentValue, HISTORY_LIMIT);
     setHistory(remembered);
     setHistoryIndex(null);
     setHistoryDraft("");
     setInputValue("");
+    setViewDraft(currentView, "");
 
     if (!currentValue.trim()) {
       return;
@@ -582,6 +651,7 @@ export function ChatDeckApp() {
 
   function historyPrevious() {
     const currentHistory = historyRef.current;
+    const currentView = messageViewKey(selectedAgentIdRef.current);
     if (!currentHistory.length) {
       return;
     }
@@ -589,15 +659,20 @@ export function ChatDeckApp() {
       setHistoryDraft(inputValueRef.current);
       const nextIndex = currentHistory.length - 1;
       setHistoryIndex(nextIndex);
-      setInputValue(currentHistory[nextIndex] ?? "");
+      const nextValue = currentHistory[nextIndex] ?? "";
+      setInputValue(nextValue);
+      setViewDraft(currentView, nextValue);
       return;
     }
     const nextIndex = Math.max(0, historyIndex - 1);
     setHistoryIndex(nextIndex);
-    setInputValue(currentHistory[nextIndex] ?? "");
+    const nextValue = currentHistory[nextIndex] ?? "";
+    setInputValue(nextValue);
+    setViewDraft(currentView, nextValue);
   }
 
   function historyNext() {
+    const currentView = messageViewKey(selectedAgentIdRef.current);
     const currentHistory = historyRef.current;
     if (historyIndex === null) {
       return;
@@ -605,11 +680,14 @@ export function ChatDeckApp() {
     if (historyIndex >= currentHistory.length - 1) {
       setHistoryIndex(null);
       setInputValue(historyDraft);
+      setViewDraft(currentView, historyDraft);
       return;
     }
     const nextIndex = historyIndex + 1;
     setHistoryIndex(nextIndex);
-    setInputValue(currentHistory[nextIndex] ?? "");
+    const nextValue = currentHistory[nextIndex] ?? "";
+    setInputValue(nextValue);
+    setViewDraft(currentView, nextValue);
   }
 
   useKeyboard((key: KeyEvent) => {
@@ -749,6 +827,7 @@ export function ChatDeckApp() {
           </box>
 
           <scrollbox
+            id={MESSAGE_SCROLLBOX_ID}
             stickyScroll
             stickyStart="bottom"
             style={{
@@ -823,7 +902,10 @@ export function ChatDeckApp() {
                     ? `Message @${selectedAgent.name} directly, or press Esc to return to controller`
                     : "Ask controller, create agents naturally, or use /new /attach @agent-name ..."
                 }
-                onInput={setInputValue}
+                onInput={(value) => {
+                  setInputValue(value);
+                  setViewDraft(messageViewKey(selectedAgentIdRef.current), value);
+                }}
                 onSubmit={(valueOrEvent) => {
                   if (typeof valueOrEvent === "string") {
                     void submitInput(valueOrEvent);
