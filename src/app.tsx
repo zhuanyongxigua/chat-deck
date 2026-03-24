@@ -26,7 +26,6 @@ import { cleanupRuntimeFiles, prepareWorkerLaunchCommand } from "./lib/worker-ru
 import type { AgentRecord, AgentState, AgentTool, ChatMessage, RouterResult } from "./lib/types";
 
 const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"];
-const TOP_BAR_BACKGROUND = "#111821";
 const MESSAGE_SCROLLBOX_ID = "message-scrollbox";
 const COMMAND_SPECS: Array<{ command: string; description: string }> = [
   { command: "/help", description: "Show available commands" },
@@ -869,21 +868,26 @@ export function ChatDeckApp() {
 
   return (
     <box style={{ width: "100%", height: "100%", flexDirection: "column", backgroundColor: "transparent" }}>
-      <box
-        style={{
-          width: "100%",
-          height: 1,
-          paddingLeft: 1,
-          backgroundColor: TOP_BAR_BACKGROUND,
-        }}
-      >
-        <text fg="#EFF1F5" attributes={TextAttributes.BOLD}>
-          {statusBarText}
-        </text>
+      <box style={{ width: "100%", height: 2, flexDirection: "column", backgroundColor: "transparent" }}>
+        <box style={{ width: "100%", height: 1, paddingLeft: 1, backgroundColor: "transparent" }}>
+          <text fg="#EFF1F5" attributes={TextAttributes.BOLD}>
+            {statusBarText}
+          </text>
+        </box>
+        <box
+          style={{
+            width: "100%",
+            height: 1,
+            border: ["top"],
+            borderStyle: "heavy",
+            borderColor: "#2A3E52",
+            backgroundColor: "transparent",
+          }}
+        />
       </box>
 
       <box
-        style={{ width: "100%", height: "100%", flexDirection: "row", backgroundColor: "transparent" }}
+        style={{ width: "100%", flexGrow: 1, flexDirection: "row", backgroundColor: "transparent" }}
         onMouseDrag={handleGlobalDividerDrag}
         onMouseDragEnd={() => handleGlobalDividerRelease("default")}
         onMouseUp={() => handleGlobalDividerRelease("default")}
@@ -942,6 +946,7 @@ export function ChatDeckApp() {
               width: 1,
               height: "100%",
               border: ["left"],
+              borderStyle: "heavy",
               borderColor: dividerActive ? "#7FB3FF" : "#2A3E52",
             }}
             onMouseOver={() => {
@@ -1026,6 +1031,7 @@ export function ChatDeckApp() {
                 width: "100%",
                 height: 3,
                 border: ["top", "bottom"],
+                borderStyle: "heavy",
                 borderColor: "#2A3E52",
                 backgroundColor: "transparent",
                 paddingLeft: 1,
