@@ -1,0 +1,29 @@
+{
+  "name": "chat-deck",
+  "version": "0.2.0",
+  "description": "Chat-first multi-agent console for Claude Code and Codex, built with Bun, OpenTUI, and tmux.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "chat-deck": "./bin/chat-deck"
+  },
+  "scripts": {
+    "dev": "bun --watch src/index.tsx",
+    "start": "bun run src/index.tsx",
+    "test": "bun test",
+    "check": "bunx tsc --noEmit"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "dependencies": {
+    "@opentui/core": "latest",
+    "@opentui/react": "latest",
+    "react": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "bun-types": "^1.3.11",
+    "typescript": "^5.9.3"
+  }
+}

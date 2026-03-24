@@ -1,6 +1,6 @@
 # Chat Deck
 
-> Chat-first multi-agent console for Claude Code and Codex, built with Python, Textual, and tmux.
+> Chat-first multi-agent console for Claude Code and Codex, built with Bun, OpenTUI, and tmux.
 
 Chat Deck lets you manage multiple Claude Code and Codex agents from one terminal UI. Each agent runs in its own isolated tmux session and can work in a completely different directory. Instead of staring at raw terminal logs, you talk to the selected agent in a chat-style pane and receive structured task summaries back when work is done.
 
@@ -22,103 +22,103 @@ tmux and terminal tabs are great at managing terminals. Chat Deck sits one layer
 
 ---
 
-## What Chat Deck Does
+## Tech Stack
 
-- Manage multiple agents from one controller UI
-- Support real workers from:
-  - Claude Code
-  - Codex
-- Run each agent in its own tmux session
-- Keep session state visible in a persistent sidebar
-- Talk to the currently selected agent in a chat-style main pane
-- Receive task summaries back in the panel instead of attaching to tmux for every result
-- Support structured completion messages via:
-
-```xml
-<TASK_DONE>{"summary":"...","result":"...","next":"..."}</TASK_DONE>
-```
-
-- Inject Claude hooks and Codex notify handlers temporarily, without modifying global `~/.claude` or `~/.codex`
-- Fold large pasted content in the UI and restore it on send
-- Show loading state in both the sidebar and the active chat view
-- Resize the sidebar with the mouse
+- Bun
+- TypeScript
+- OpenTUI
+- tmux
 
 ---
 
-## Current Features
+## Current OpenTUI Rewrite
 
-### Multi-agent chat controller
+The project has been rewritten around OpenTUI instead of Python/Textual.
 
-- Single main UI for managing multiple agent sessions
-- Always-visible session cards in the sidebar
-- Session cards include:
-  - name
-  - client
-  - working directory
-  - status
+The current TypeScript rewrite keeps the core Chat Deck workflow:
 
-### Chat-first interaction
+- Persistent sidebar with session status
+- Chat-style main pane for the selected agent
+- tmux-backed Claude Code and Codex workers
+- `/new`, `/agents`, `/close`, `/attach`, and `@agent-name ...`
+- `Ctrl+1..9`, `Ctrl+T`, `Ctrl+X`, `Ctrl+B`, `Esc`
+- Natural-language create requests such as `create a codex session in /path/to/project`
+- Structured completion parsing via `<TASK_DONE>...</TASK_DONE>`
 
-- Main content area is a chat with the selected agent
-- Raw execution logs are not the primary view
-- Agents return summaries to the chat when they finish work
+Some richer Python-era behaviors are intentionally not carried over yet and will need to be rebuilt natively in TypeScript.
 
-### tmux-backed workers
+---
 
-- Each agent runs in an independent tmux session
-- Workers can run in completely different directories
-- You can still jump into the native CLI when needed
+## Prerequisites
 
-### Structured completion flow
+You need these tools on your machine:
 
-- Claude and Codex can send task-complete summaries back to the panel
-- Completion is currently driven by the `<TASK_DONE>...</TASK_DONE>` protocol
+```bash
+which bun
+which zig
+which tmux
+which claude
+which codex
+```
 
-### Input and usability
-
-- Mouse selection works in the content area
-- `Ctrl+C` copies
-- `Ctrl+V` pastes
-- Large pasted content is collapsed visually and restored when sent
-- Typing `/` shows command suggestions
-- `Tab` autocompletes the current command suggestion
+If you only want to inspect the code, `bun` and `zig` are the main requirements for the TUI itself. If you want real workers, `tmux` plus `claude` and/or `codex` must also be installed.
 
 ---
 
 ## Install
 
+Clone the repository and install dependencies:
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+git clone git@github.com:zhuanyongxigua/chat-deck.git
+cd chat-deck
+bun install
 ```
 
-Chat Deck depends on `tmux` for real Claude Code and Codex worker sessions. Install it separately before launching the app normally:
+If you want the `chat-deck` command available globally from this checkout:
 
 ```bash
-brew install tmux
-```
-
-If you plan to use real workers, make sure these are on `PATH` as well:
-
-```bash
-which tmux
-which claude
-which codex
+bun link
 ```
 
 ---
 
 ## Run
 
+Run directly from the repo:
+
+```bash
+bun run dev
+```
+
+`bun run dev` now watches `src/` and automatically restarts Chat Deck when files change.
+
+Or, after linking:
+
 ```bash
 chat-deck
 ```
 
-Demo mode still works without `tmux`:
+For a single non-watch launch:
 
 ```bash
-chat-deck --demo
+bun run start
+```
+
+---
+
+## Validate
+
+Run the minimal test suite:
+
+```bash
+bun test
+```
+
+Run a type check:
+
+```bash
+bun run check
 ```
 
 ---
@@ -138,8 +138,6 @@ You can also pass client-specific startup arguments directly after the working d
 /new codex worker /path/to/project --model gpt-5 --profile fast
 /new claude reviewer /path/to/project --dangerously-skip-permissions
 ```
-
-Chat Deck will still inject its own runtime notify / settings hooks after your custom arguments.
 
 ### Session management
 
@@ -164,98 +162,14 @@ Chat Deck will still inject its own runtime notify / settings hooks after your c
 
 ---
 
-## How It Works
-
-Chat Deck has two layers.
-
-### 1. Controller UI
-
-The controller is built with Python + Textual.
-
-It is responsible for:
-
-- showing agent status
-- routing messages
-- displaying summaries
-- managing the active chat view
-
-### 2. Real worker sessions
-
-Claude Code and Codex run as real CLI workers inside tmux.
-
-Chat Deck does not replace those CLIs. It manages them, talks to them, and summarizes them.
-
-When you need the native interface, you can attach to the worker's tmux session with `Ctrl+T`.
-
----
-
-## Why Not Just tmux or Terminal Tabs?
-
-tmux manages terminals.
-
-Chat Deck manages agent conversations.
-
-That means:
-
-- status is visible without hunting for the right pane
-- you can talk to an agent directly from the controller
-- you get task summaries back in chat
-- you only attach to the native CLI when you actually need it
-
----
-
 ## Current Limitations
 
-- The controller does not yet use a full LLM-powered orchestration layer
-- Codex fine-grained semantic state is not yet connected through the full app-server path
-- Completion summaries currently depend on the worker emitting the `TASK_DONE` protocol correctly
-- The main UI is chat-first, not an embedded native Claude / Codex terminal
-
----
-
-## Roadmap
-
-- Add a smarter controller agent
-- Improve Codex semantic status integration
-- Make completion summaries more robust than protocol-only detection
-- Add richer session history and summary browsing
-- Explore embedded terminal support later, without making it the core UX
-
----
-
-## Design Principles
-
-- Chat first, terminal second
-- Summaries over raw logs
-- Native CLI only when needed
-- No global config pollution
-- One controller, many long-running workers
-
----
-
-## Who Is This For?
-
-Chat Deck is for developers who:
-
-- run multiple Claude Code or Codex sessions at once
-- want one place to see session state
-- prefer conversation and summaries over watching terminal output
-- still want native tmux-backed CLI sessions available on demand
-
----
-
-## Project Status
-
-Chat Deck is currently focused on a local-first workflow:
-
-- Python + Textual for the controller
-- tmux for long-running worker sessions
-- Claude Code and Codex as the first supported workers
-
-Packaging, installation, and broader distribution are still evolving.
+- The richer Claude hook and Codex notify/app-server pipeline has not yet been reimplemented in the OpenTUI version
+- The current completion flow still depends on workers emitting the `TASK_DONE` protocol correctly
+- The OpenTUI rewrite has not been validated in this repository yet because Bun/Zig are not installed in the current environment
 
 ---
 
 ## License
 
-[MIT](./LICENSE)
+MIT
