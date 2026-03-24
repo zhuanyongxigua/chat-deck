@@ -208,6 +208,9 @@ export function ChatDeckApp() {
   const inboxOffsetRef = useRef(initialAppState?.inboxOffset ?? 0);
   const clipboardWarningShownRef = useRef(false);
   const lastCopiedSelectionRef = useRef("");
+  const pendingSelectionRef = useRef("");
+  const selectionCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const selectionClearTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const controllerMessagesRef = useRef(controllerMessages);
   const sidebarVisibleRef = useRef(sidebarVisible);
   const sidebarWidthRef = useRef(sidebarWidthOverride);
@@ -300,41 +303,79 @@ export function ChatDeckApp() {
   }, [clipboardNotice]);
 
   useEffect(() => {
-    const copyCurrentSelection = () => {
-      const selection = renderer.getSelection();
-      const text = selection?.getSelectedText() ?? "";
+    const clearPendingSelectionCopy = () => {
+      pendingSelectionRef.current = "";
+      if (selectionCopyTimeoutRef.current) {
+        clearTimeout(selectionCopyTimeoutRef.current);
+        selectionCopyTimeoutRef.current = null;
+      }
+    };
+
+    const scheduleSelectionCopy = (text: string) => {
       if (!text) {
+        clearPendingSelectionCopy();
         lastCopiedSelectionRef.current = "";
         return;
       }
-      if (text === lastCopiedSelectionRef.current) {
+
+      if (text === lastCopiedSelectionRef.current || text === pendingSelectionRef.current) {
         return;
       }
-      const copied = copyTextToClipboard(text, {
-        osc52Copy: () => renderer.copyToClipboardOSC52(text),
-      });
-      if (copied) {
-        lastCopiedSelectionRef.current = text;
-        setClipboardNotice("Copied to clipboard");
-        return;
-      }
-      if (!copied && !clipboardWarningShownRef.current) {
-        clipboardWarningShownRef.current = true;
-        setFooterText("Clipboard copy is unavailable in this terminal. Enable terminal clipboard access for OSC52.");
-        setFooterError(true);
-      }
+
+      clearPendingSelectionCopy();
+      pendingSelectionRef.current = text;
+      selectionCopyTimeoutRef.current = setTimeout(() => {
+        const currentSelection = renderer.getSelection();
+        const currentText = currentSelection?.getSelectedText() ?? "";
+        if (!currentText || currentText !== pendingSelectionRef.current) {
+          clearPendingSelectionCopy();
+          return;
+        }
+
+        const copied = copyTextToClipboard(currentText, {
+          osc52Copy: () => renderer.copyToClipboardOSC52(currentText),
+        });
+        if (copied) {
+          lastCopiedSelectionRef.current = currentText;
+          setClipboardNotice("Copied to clipboard");
+          if (selectionClearTimeoutRef.current) {
+            clearTimeout(selectionClearTimeoutRef.current);
+          }
+          selectionClearTimeoutRef.current = setTimeout(() => {
+            renderer.clearSelection();
+            selectionClearTimeoutRef.current = null;
+          }, 900);
+        } else if (!clipboardWarningShownRef.current) {
+          clipboardWarningShownRef.current = true;
+          setFooterText("Clipboard copy is unavailable in this terminal. Enable terminal clipboard access for OSC52.");
+          setFooterError(true);
+        }
+
+        clearPendingSelectionCopy();
+      }, 450);
+    };
+
+    const syncSelectionCopy = () => {
+      const selection = renderer.getSelection();
+      const text = selection?.getSelectedText() ?? "";
+      scheduleSelectionCopy(text);
     };
 
     const handleSelection = () => {
-      copyCurrentSelection();
+      syncSelectionCopy();
     };
 
     const timer = setInterval(() => {
-      copyCurrentSelection();
+      syncSelectionCopy();
     }, 150);
 
     renderer.on(CliRenderEvents.SELECTION, handleSelection);
     return () => {
+      clearPendingSelectionCopy();
+      if (selectionClearTimeoutRef.current) {
+        clearTimeout(selectionClearTimeoutRef.current);
+        selectionClearTimeoutRef.current = null;
+      }
       clearInterval(timer);
       renderer.off(CliRenderEvents.SELECTION, handleSelection);
     };
