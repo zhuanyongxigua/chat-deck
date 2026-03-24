@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { applyAgentSelection } from "./lib/agent-state";
 import { interpretControllerMessage } from "./lib/controller";
 import { HISTORY_LIMIT, loadHistory, rememberHistory } from "./lib/history";
 import { readInboxEvents } from "./lib/inbox";
@@ -24,6 +25,7 @@ import { cleanupRuntimeFiles, prepareWorkerLaunchCommand } from "./lib/worker-ru
 import type { AgentRecord, AgentState, AgentTool, ChatMessage, RouterResult } from "./lib/types";
 
 const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"];
+const TOP_BAR_BACKGROUND = "#111821";
 const COMMAND_SPECS: Array<{ command: string; description: string }> = [
   { command: "/help", description: "Show available commands" },
   { command: "/agents", description: "List current agents" },
@@ -320,12 +322,9 @@ export function ChatDeckApp() {
   }
 
   function selectAgent(agentId: string | null) {
+    const previousSelectedId = selectedAgentIdRef.current;
     setSelectedAgentId(agentId);
-    if (agentId) {
-      setAgents((previous) =>
-        previous.map((agent) => (agent.id === agentId ? { ...agent, unreadCount: 0 } : agent)),
-      );
-    }
+    setAgents((previous) => applyAgentSelection(previous, previousSelectedId, agentId));
   }
 
   async function createAgent({
@@ -680,7 +679,14 @@ export function ChatDeckApp() {
 
   return (
     <box style={{ width: "100%", height: "100%", flexDirection: "column", backgroundColor: "transparent" }}>
-      <box style={{ width: "100%", height: 1, paddingLeft: 1, backgroundColor: "transparent" }}>
+      <box
+        style={{
+          width: "100%",
+          height: 1,
+          paddingLeft: 1,
+          backgroundColor: TOP_BAR_BACKGROUND,
+        }}
+      >
         <text fg="#EFF1F5" attributes={TextAttributes.BOLD}>
           {statusBarText}
         </text>
@@ -735,7 +741,7 @@ export function ChatDeckApp() {
           </box>
         ) : null}
 
-        {sidebarVisible ? <box style={{ width: 1, height: "100%", backgroundColor: "#2A3E52" }} /> : null}
+        {sidebarVisible ? <box style={{ width: 1, height: "100%", border: ["left"], borderColor: "#2A3E52" }} /> : null}
 
         <box style={{ width: "100%", height: "100%", flexDirection: "column", backgroundColor: "transparent" }}>
           <box style={{ width: "100%", height: 1, paddingLeft: 1, backgroundColor: "transparent" }}>
