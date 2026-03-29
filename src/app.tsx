@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import { applyAgentSelection } from "./lib/agent-state";
 import { loadAppState, saveAppState, type PersistedAppState, type ViewState } from "./lib/app-state";
 import { copyTextToClipboard } from "./lib/clipboard";
+import { looksLikeCodexTranscript } from "./lib/codex-ui";
 import { interpretControllerMessage } from "./lib/controller";
 import { HISTORY_LIMIT, loadHistory, rememberHistory } from "./lib/history";
 import { readInboxEvents } from "./lib/inbox";
@@ -15,12 +16,14 @@ import { parseUserInput } from "./lib/router";
 import { buildTaskDonePrompt, formatTaskDone } from "./lib/task-done";
 import {
   attachTmuxSession,
+  captureTmuxSnapshot,
   commandExists,
   createTmuxSession,
   destroyTmuxSession,
   detectGitBranch,
   getTmuxPaneState,
   isTmuxAvailable,
+  sendKeysToTmux,
   sendTextToTmux,
 } from "./lib/tmux";
 import { cleanupRuntimeFiles, prepareWorkerLaunchCommand } from "./lib/worker-runtime";
@@ -649,13 +652,40 @@ export function ChatDeckApp() {
       return;
     }
 
+    if (target.tool === "codex") {
+      const snapshot = (await captureTmuxSnapshot(target.sessionName, 80)).join("\n");
+      if (looksLikeCodexTranscript(snapshot)) {
+        try {
+          await sendKeysToTmux(target.sessionName, ["Escape"]);
+          await new Promise((resolve) => setTimeout(resolve, 80));
+        } catch {
+          // Best effort only. If this fails, still allow attach.
+        }
+      }
+    }
+
     setFooterText(`Attaching @${target.name}. Detach with Ctrl+B then d to return.`);
     setFooterError(false);
     renderer.suspend();
+    let result;
     try {
-      attachTmuxSession(target.sessionName);
+      result = attachTmuxSession(target.sessionName);
     } finally {
       renderer.resume();
+      renderer.requestRender();
+      setTimeout(() => {
+        try {
+          renderer.requestRender();
+          renderer.intermediateRender();
+        } catch {
+          // Renderer may still be settling after resume.
+        }
+      }, 0);
+    }
+    if (!result?.ok) {
+      setFooterText(result?.stderr || `Failed to attach tmux session ${target.sessionName} (exit ${result?.code ?? 1}).`);
+      setFooterError(true);
+      return;
     }
     setFooterText(`Returned from tmux session @${target.name}`);
     setFooterError(false);

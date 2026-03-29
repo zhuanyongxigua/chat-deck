@@ -96,6 +96,13 @@ export async function sendTextToTmux(sessionName: string, text: string): Promise
   await runCommand("tmux", ["send-keys", "-t", sessionName, "C-m"]);
 }
 
+export async function sendKeysToTmux(sessionName: string, keys: string[]): Promise<void> {
+  if (!keys.length) {
+    return;
+  }
+  await runCommand("tmux", ["send-keys", "-t", sessionName, ...keys]);
+}
+
 export async function captureTmuxSnapshot(sessionName: string, lines = 180): Promise<string[]> {
   const result = await runCommand(
     "tmux",
