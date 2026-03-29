@@ -31,6 +31,7 @@ import type { AgentRecord, AgentState, AgentTool, ChatMessage, RouterResult } fr
 
 const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"];
 const MESSAGE_SCROLLBOX_ID = "message-scrollbox";
+const MESSAGE_PREFIX_WIDTH = 2;
 const COMMAND_SPECS: Array<{ command: string; description: string }> = [
   { command: "/help", description: "Show available commands" },
   { command: "/agents", description: "List current agents" },
@@ -1085,7 +1086,14 @@ export function ChatDeckApp() {
         ) : null}
 
         <box style={{ width: "100%", height: "100%", flexDirection: "column", backgroundColor: "transparent" }}>
-          <box style={{ width: "100%", height: 1, paddingLeft: 1, backgroundColor: "transparent" }}>
+          <box
+            style={{
+              width: "100%",
+              height: 1,
+              paddingLeft: 1 + MESSAGE_PREFIX_WIDTH,
+              backgroundColor: "transparent",
+            }}
+          >
             <text fg="#B3BFCC">{workspaceTitle}</text>
           </box>
 
@@ -1107,10 +1115,31 @@ export function ChatDeckApp() {
                   key={message.id}
                   style={{
                     width: "100%",
-                    flexDirection: "column",
+                    flexDirection: "row",
                     marginBottom: index === visibleMessages.length - 1 ? 0 : 1,
                   }}
                 >
+                  <box
+                    style={{
+                      width: MESSAGE_PREFIX_WIDTH,
+                      flexDirection: "row",
+                      backgroundColor: "transparent",
+                    }}
+                  >
+                    <text
+                      fg={
+                        message.role === "user"
+                          ? "#7FB3FF"
+                          : message.role === "error"
+                            ? "#FF6F6F"
+                            : message.role === "system"
+                              ? "#B3BFCC"
+                              : "#EFF1F5"
+                      }
+                    >
+                      {message.role === "user" ? "> " : "  "}
+                    </text>
+                  </box>
                   <text
                     fg={
                       message.role === "user"
@@ -1126,10 +1155,8 @@ export function ChatDeckApp() {
                     selectedAgent &&
                     selectedAgent.awaitingResult &&
                     index === visibleMessages.length - 1
-                      ? `> ${SPINNER_FRAMES[animationTick % SPINNER_FRAMES.length]} ${message.content}`
-                      : message.role === "user"
-                        ? `> ${message.content}`
-                        : message.content}
+                      ? `${SPINNER_FRAMES[animationTick % SPINNER_FRAMES.length]} ${message.content}`
+                      : message.content}
                   </text>
                 </box>
               ))
@@ -1158,6 +1185,7 @@ export function ChatDeckApp() {
               <text fg="#7FE5B2" attributes={TextAttributes.BOLD}>
                 &gt;
               </text>
+              <box style={{ width: 1, height: 1, backgroundColor: "transparent" }} />
               <input
                 value={inputValue}
                 focused
