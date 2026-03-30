@@ -3,6 +3,7 @@ import { RouterResult, type AgentTool } from "./types";
 const USER_CREATABLE_TOOLS: Record<string, AgentTool> = {
   claude: "claude",
   codex: "codex",
+  copilot: "copilot",
 };
 
 function shellSplit(text: string): string[] {
@@ -93,7 +94,7 @@ export function parseUserInput(raw: string): RouterResult {
     if (parts.length < 4) {
       return {
         kind: "invalid",
-        message: "Usage: /new <codex|claude> <name> <cwd> [client args...]",
+        message: "Usage: /new <codex|claude|copilot> <name> <cwd> [client args...]",
       };
     }
 
@@ -102,7 +103,7 @@ export function parseUserInput(raw: string): RouterResult {
     if (!tool) {
       return {
         kind: "invalid",
-        message: `Unsupported client: ${toolToken}. Use codex or claude.`,
+        message: `Unsupported client: ${toolToken}. Use codex, claude, or copilot.`,
       };
     }
 

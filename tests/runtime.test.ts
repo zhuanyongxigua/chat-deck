@@ -28,7 +28,7 @@ describe("worker runtime callbacks", () => {
   });
 
   test("injects codex notify without touching global config", () => {
-    const prepared = prepareWorkerLaunchCommand("codex", "agent-1", ["codex", "--model", "gpt-5"]);
+    const prepared = prepareWorkerLaunchCommand("codex", "agent-1", "/tmp/demo", ["codex", "--model", "gpt-5"]);
 
     expect(prepared.runtimeFiles).toEqual([]);
     expect(prepared.command).toEqual([
@@ -43,8 +43,27 @@ describe("worker runtime callbacks", () => {
     expect(prepared.command[4]).toContain("\"agent-1\"");
   });
 
+
+
+  test("creates a copilot wrapper with repository-scoped hooks", () => {
+    const prepared = prepareWorkerLaunchCommand("copilot", "agent-5", "/tmp/demo", ["copilot", "--model", "gpt-4.1"]);
+
+    expect(prepared.cwd).toContain("copilot-wrapper");
+    expect(prepared.runtimeFiles).toEqual([prepared.cwd!]);
+    expect(prepared.command).toEqual(["copilot", "--model", "gpt-4.1", "--add-dir", "/tmp/demo"]);
+
+    const hookFile = join(prepared.cwd!, ".github", "hooks", "chat-deck.json");
+    expect(existsSync(hookFile)).toBe(true);
+    const hooks = readFileSync(hookFile, "utf8");
+    expect(hooks).toContain('"sessionStart"');
+    expect(hooks).toContain('"agentStop"');
+    expect(hooks).toContain('"/cwd /tmp/demo"');
+    expect(hooks).toContain("publish-done");
+    expect(hooks).toContain("agent-5");
+  });
+
   test("writes a claude settings file with a Stop hook callback", () => {
-    const prepared = prepareWorkerLaunchCommand("claude", "agent-2", ["claude", "--model", "sonnet"]);
+    const prepared = prepareWorkerLaunchCommand("claude", "agent-2", "/tmp/demo", ["claude", "--model", "sonnet"]);
 
     expect(prepared.runtimeFiles).toHaveLength(1);
     expect(existsSync(prepared.runtimeFiles[0]!)).toBe(true);
@@ -54,6 +73,25 @@ describe("worker runtime callbacks", () => {
     expect(settings).toContain("\"Stop\"");
     expect(settings).toContain("publish-done");
     expect(settings).toContain("agent-2");
+  });
+
+
+
+  test("finds TASK_DONE content inside nested hook payload strings", () => {
+    const event = publishDoneEventFromPayload("copilot", "agent-6", {
+      cwd: "/tmp/demo",
+      event: {
+        output: {
+          final: 'Done. <TASK_DONE>{"summary":"Completed the task.","result":"Created the plan.","next":"Run the command."}</TASK_DONE>',
+        },
+      },
+    });
+
+    expect(event).not.toBeNull();
+    expect(event?.tool).toBe("copilot");
+    expect(event?.summary).toBe("Completed the task.");
+    expect(event?.result).toBe("Created the plan.");
+    expect(event?.next).toBe("Run the command.");
   });
 
   test("publishes a task_done inbox event from callback payload", () => {

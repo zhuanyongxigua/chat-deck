@@ -29,6 +29,9 @@ function detectToolType(text: string): AgentTool | null {
   if (lowered.includes("codex")) {
     return "codex";
   }
+  if (lowered.includes("copilot cli") || lowered.includes("copilot")) {
+    return "copilot";
+  }
   return null;
 }
 

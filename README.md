@@ -1,8 +1,8 @@
 # Chat Deck
 
-> Chat-first multi-agent console for Claude Code and Codex, built with Bun, OpenTUI, and tmux.
+> Chat-first multi-agent console for Claude Code, Codex, and Copilot CLI, built with Bun, OpenTUI, and tmux.
 
-Chat Deck lets you manage multiple Claude Code and Codex agents from one terminal UI. Each agent runs in its own isolated tmux session and can work in a completely different directory. Instead of staring at raw terminal logs, you talk to the selected agent in a chat-style pane and receive structured task summaries back when work is done.
+Chat Deck lets you manage multiple Claude Code, Codex, and Copilot CLI agents from one terminal UI. Each agent runs in its own isolated tmux session and can work in a completely different directory. Instead of staring at raw terminal logs, you talk to the selected agent in a chat-style pane and receive structured task summaries back when work is done.
 
 ![Chat Deck screenshot](./assets/chat-deck-screenshot.png)
 
@@ -39,7 +39,7 @@ The current TypeScript rewrite keeps the core Chat Deck workflow:
 
 - Persistent sidebar with session status
 - Chat-style main pane for the selected agent
-- tmux-backed Claude Code and Codex workers
+- tmux-backed Claude Code, Codex, and Copilot CLI workers
 - `/new`, `/agents`, `/close`, `/attach`, and `@agent-name ...`
 - `Ctrl+1..9`, `Ctrl+T`, `Ctrl+X`, `Ctrl+B`, `Esc`
 - Natural-language create requests such as `create a codex session in /path/to/project`
@@ -59,6 +59,7 @@ which zig
 which tmux
 which claude
 which codex
+which copilot
 ```
 
 If you only want to inspect the code, `bun` and `zig` are the main requirements for the TUI itself. If you want real workers, `tmux` plus `claude` and/or `codex` must also be installed.
@@ -130,6 +131,7 @@ bun run check
 ```bash
 /new codex <name> <cwd>
 /new claude <name> <cwd>
+/new copilot <name> <cwd>
 ```
 
 You can also pass client-specific startup arguments directly after the working directory:

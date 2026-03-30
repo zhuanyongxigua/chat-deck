@@ -23,6 +23,18 @@ describe("parseUserInput", () => {
     });
   });
 
+
+
+  test("parses slash commands for copilot agents", () => {
+    expect(parseUserInput("/new copilot helper /tmp/demo --model gpt-4.1")).toEqual({
+      kind: "create_agent",
+      tool: "copilot",
+      name: "helper",
+      cwd: "/tmp/demo",
+      launchCommand: ["copilot", "--model", "gpt-4.1"],
+    });
+  });
+
   test("parses direct agent messages", () => {
     expect(parseUserInput("@api-agent summarize the current status")).toEqual({
       kind: "agent_message",
@@ -34,7 +46,7 @@ describe("parseUserInput", () => {
   test("returns a helpful error for unsupported tools", () => {
     expect(parseUserInput("/new mock demo /tmp/demo")).toEqual({
       kind: "invalid",
-      message: "Unsupported client: mock. Use codex or claude.",
+      message: "Unsupported client: mock. Use codex, claude, or copilot.",
     });
   });
 

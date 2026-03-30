@@ -1,4 +1,4 @@
-export type AgentTool = "claude" | "codex";
+export type AgentTool = "claude" | "codex" | "copilot";
 
 export type AgentState = "idle" | "working" | "completed" | "error" | "blocked";
 

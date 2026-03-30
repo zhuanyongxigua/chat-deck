@@ -39,7 +39,7 @@ tmux 和终端 tab 很擅长管理终端本身。Chat Deck 位于它们之上，
 
 - 常驻侧边栏会话状态
 - 当前选中 agent 的聊天式主面板
-- 基于 tmux 的 Claude Code / Codex worker
+- 基于 tmux 的 Claude Code / Codex / Copilot CLI worker
 - `/new`、`/agents`、`/close`、`/attach`、`@agent-name ...`
 - `Ctrl+1..9`、`Ctrl+T`、`Ctrl+X`、`Ctrl+B`、`Esc`
 - 类似 `create a codex session in /path/to/project` 这样的自然语言建会话
@@ -59,6 +59,7 @@ which zig
 which tmux
 which claude
 which codex
+which copilot
 ```
 
 如果你只是想跑 TUI，本身最关键的是 `bun` 和 `zig`。如果你想跑真实 worker，还需要 `tmux`，以及 `claude` / `codex` 至少安装一个。
@@ -130,6 +131,7 @@ bun run check
 ```bash
 /new codex <name> <cwd>
 /new claude <name> <cwd>
+/new copilot <name> <cwd>
 ```
 
 也可以在工作目录后面直接附加 client 参数：

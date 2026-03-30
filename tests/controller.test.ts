@@ -33,6 +33,18 @@ describe("interpretControllerMessage", () => {
     });
   });
 
+
+
+  test("detects Copilot create requests", () => {
+    expect(interpretControllerMessage("create a copilot session in /tmp/copilot-demo")).toEqual({
+      kind: "create_agent",
+      tool: "copilot",
+      cwd: "/tmp/copilot-demo",
+      name: "copilot-demo-copilot",
+      message: "create a copilot session in /tmp/copilot-demo",
+    });
+  });
+
   test("ignores unrelated controller chat", () => {
     expect(interpretControllerMessage("what sessions are currently active?")).toBeNull();
   });

@@ -50,7 +50,13 @@ function createMessage(role: ChatMessage["role"], content: string): ChatMessage 
 }
 
 function clientLabel(tool: AgentTool): string {
-  return tool === "claude" ? "Claude Code" : "Codex";
+  if (tool === "claude") {
+    return "Claude Code";
+  }
+  if (tool === "copilot") {
+    return "Copilot CLI";
+  }
+  return "Codex";
 }
 
 function stateLabel(state: AgentState): string {
@@ -121,10 +127,10 @@ function initialControllerMessages(): ChatMessage[] {
   return [
     createMessage(
       "system",
-      "Commands: /help, /agents, /new <codex|claude> <name> <cwd> [client args...], /attach [agent-name], /close [agent-name], @agent-name <message>",
+      "Commands: /help, /agents, /new <codex|claude|copilot> <name> <cwd> [client args...], /attach [agent-name], /close [agent-name], @agent-name <message>",
     ),
     createMessage("system", "The sidebar keeps all agent status visible without opening extra panes."),
-    createMessage("system", "Claude Code and Codex workers run inside tmux sessions."),
+    createMessage("system", "Claude Code, Codex, and Copilot CLI workers run inside tmux sessions."),
     createMessage("system", "Use Ctrl+1..9 to select agents, Ctrl+T to attach, Ctrl+X to close, and Esc to return to controller."),
   ];
 }
@@ -563,7 +569,7 @@ export function ChatDeckApp() {
       return;
     }
     if (!(await isTmuxAvailable())) {
-      setFooterText("tmux is required for Claude Code and Codex workers, but it is not installed or not on PATH.");
+      setFooterText("tmux is required for Claude Code, Codex, and Copilot CLI workers, but it is not installed or not on PATH.");
       setFooterError(true);
       return;
     }
@@ -576,10 +582,10 @@ export function ChatDeckApp() {
     const id = randomUUID().slice(0, 8);
     const sessionName = makeSessionName(tool, name, id);
     const branch = await detectGitBranch(resolvedCwd);
-    const prepared = prepareWorkerLaunchCommand(tool, id, launchCommand);
+    const prepared = prepareWorkerLaunchCommand(tool, id, resolvedCwd, launchCommand);
 
     try {
-      await createTmuxSession(sessionName, resolvedCwd, prepared.command);
+      await createTmuxSession(sessionName, prepared.cwd ?? resolvedCwd, prepared.command);
     } catch (error) {
       setFooterText((error as Error).message);
       setFooterError(true);
@@ -730,7 +736,7 @@ export function ChatDeckApp() {
   async function handleRouterResult(result: RouterResult) {
     if (result.kind === "help") {
       writeController(
-        "Commands: /help, /agents, /new <codex|claude> <name> <cwd> [client args...], /attach [agent-name], /close [agent-name], @agent-name <message>.",
+        "Commands: /help, /agents, /new <codex|claude|copilot> <name> <cwd> [client args...], /attach [agent-name], /close [agent-name], @agent-name <message>.",
       );
       return;
     }
@@ -967,9 +973,6 @@ export function ChatDeckApp() {
     : "No agents running";
   const footerDisplay = commandMatches.length ? commandFooter(commandMatches, commandIndex % commandMatches.length) : footerText;
   const footerColor = commandMatches.length ? "#B3BFCC" : footerError ? "#FF6F6F" : "#D1D8E0";
-  const workspaceTitle = selectedAgent
-    ? `@${selectedAgent.name}  ${clientLabel(selectedAgent.tool)}  ${stateLabel(selectedAgent.state)}`
-    : "Controller";
 
   return (
     <box style={{ width: "100%", height: "100%", flexDirection: "column", backgroundColor: "transparent" }}>
@@ -1023,7 +1026,6 @@ export function ChatDeckApp() {
                 {agents.map((agent) => (
                   <box
                     key={agent.id}
-                    title={`@${agent.name}`}
                     style={{
                       width: "100%",
                       border: true,
@@ -1038,6 +1040,7 @@ export function ChatDeckApp() {
                       flexDirection: "column",
                     }}
                   >
+                    <text fg="#EFF1F5">@{agent.name}</text>
                     <text fg="#FFFFFF">client {clientLabel(agent.tool)}</text>
                     <text fg="#FFFFFF">dir {agent.cwd}</text>
                     <text fg={stateColor(agent.state)}>
@@ -1049,7 +1052,7 @@ export function ChatDeckApp() {
             ) : (
               <box style={{ paddingLeft: 1, paddingRight: 1, paddingTop: 1, flexDirection: "column" }}>
                 <text fg="#8293A6">No agents yet.</text>
-                <text fg="#8293A6">Use /new &lt;codex|claude&gt; &lt;name&gt; &lt;cwd&gt;</text>
+                <text fg="#8293A6">Use /new &lt;codex|claude|copilot&gt; &lt;name&gt; &lt;cwd&gt;</text>
                 <text fg="#8293A6">or say: create a codex session in /path/to/project</text>
               </box>
             )}
@@ -1086,17 +1089,6 @@ export function ChatDeckApp() {
         ) : null}
 
         <box style={{ width: "100%", height: "100%", flexDirection: "column", backgroundColor: "transparent" }}>
-          <box
-            style={{
-              width: "100%",
-              height: 1,
-              paddingLeft: 1 + MESSAGE_PREFIX_WIDTH,
-              backgroundColor: "transparent",
-            }}
-          >
-            <text fg="#B3BFCC">{workspaceTitle}</text>
-          </box>
-
           <scrollbox
             id={MESSAGE_SCROLLBOX_ID}
             stickyScroll
@@ -1105,6 +1097,7 @@ export function ChatDeckApp() {
               width: "100%",
               height: "100%",
               backgroundColor: "transparent",
+              paddingTop: 1,
               paddingLeft: 1,
               paddingRight: 1,
             }}
