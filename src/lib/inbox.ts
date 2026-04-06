@@ -10,6 +10,7 @@ export interface InboxEvent {
   cwd?: string;
   sessionId?: string;
   type: "task_done";
+  display?: string;
   summary: string;
   result: string;
   next: string;

@@ -49,6 +49,7 @@ export interface RouterResult {
 }
 
 export interface TaskDonePayload {
+  display?: string;
   summary?: string;
   result?: string;
   next?: string;

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
-import { CliRenderEvents, TextAttributes, type KeyEvent, type MouseEvent } from "@opentui/core";
+import { CliRenderEvents, SyntaxStyle, TextAttributes, type KeyEvent, type MouseEvent } from "@opentui/core";
 import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
@@ -57,6 +57,35 @@ function clientLabel(tool: AgentTool): string {
     return "Copilot CLI";
   }
   return "Codex";
+}
+
+function createMessageMarkdownStyle(primaryTextColor: string): SyntaxStyle {
+  return SyntaxStyle.fromTheme([
+    { scope: ["default"], style: { foreground: primaryTextColor } },
+    { scope: ["markup.heading"], style: { foreground: "#9CB0C5" } },
+    { scope: ["markup.strong"], style: { foreground: primaryTextColor, bold: true } },
+    { scope: ["markup.italic"], style: { foreground: primaryTextColor, italic: true } },
+    { scope: ["markup.raw"], style: { foreground: "#F2D98C" } },
+    { scope: ["markup.link", "markup.link.label", "markup.link.url"], style: { foreground: "#7FB3FF", underline: true } },
+    { scope: ["conceal"], style: { foreground: "#617387", dim: true } },
+  ]);
+}
+
+function messageColor(role: ChatMessage["role"], primaryTextColor: string): string | undefined {
+  if (role === "user") {
+    return primaryTextColor;
+  }
+  if (role === "error") {
+    return "#FF6F6F";
+  }
+  if (role === "system") {
+    return "#B3BFCC";
+  }
+  return primaryTextColor;
+}
+
+function splitMessageLines(content: string): string[] {
+  return content.replace(/\r\n?/g, "\n").split("\n");
 }
 
 function stateLabel(state: AgentState): string {
@@ -210,6 +239,7 @@ export function ChatDeckApp() {
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const [historyDraft, setHistoryDraft] = useState("");
   const [commandIndex, setCommandIndex] = useState(0);
+  const [terminalDefaultForeground, setTerminalDefaultForeground] = useState<string | null>(null);
 
   const agentsRef = useRef(agents);
   const selectedAgentIdRef = useRef(selectedAgentId);
@@ -256,6 +286,33 @@ export function ChatDeckApp() {
   useEffect(() => {
     sidebarWidthRef.current = sidebarWidthOverride;
   }, [sidebarWidthOverride]);
+
+  const primaryTextColor = terminalDefaultForeground ?? "#EFF1F5";
+  const messageMarkdownStyle = useMemo(
+    () => createMessageMarkdownStyle(primaryTextColor),
+    [primaryTextColor],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void renderer
+      .getPalette()
+      .then((palette) => {
+        if (!cancelled) {
+          setTerminalDefaultForeground(typeof palette.defaultForeground === "string" ? palette.defaultForeground : null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTerminalDefaultForeground(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [renderer]);
 
   useEffect(() => {
     const timer = setInterval(() => setAnimationTick((value) => value + 1), 200);
@@ -508,6 +565,7 @@ export function ChatDeckApp() {
         const taskDoneEvents = events.filter((event) => event.agentId === agent.id && event.type === "task_done");
         for (const event of taskDoneEvents) {
           const formatted = formatTaskDone({
+            display: event.display,
             summary: event.summary,
             result: event.result,
             next: event.next,
@@ -988,7 +1046,7 @@ export function ChatDeckApp() {
             justifyContent: "space-between",
           }}
         >
-          <text fg="#EFF1F5" attributes={TextAttributes.BOLD}>
+          <text fg={primaryTextColor} attributes={TextAttributes.BOLD}>
             {statusBarText}
           </text>
           <text fg="#7FE5B2">{clipboardNotice}</text>
@@ -1040,9 +1098,9 @@ export function ChatDeckApp() {
                       flexDirection: "column",
                     }}
                   >
-                    <text fg="#EFF1F5">@{agent.name}</text>
-                    <text fg="#FFFFFF">client {clientLabel(agent.tool)}</text>
-                    <text fg="#FFFFFF">dir {agent.cwd}</text>
+                    <text fg={primaryTextColor}>@{agent.name}</text>
+                    <text fg={primaryTextColor}>client {clientLabel(agent.tool)}</text>
+                    <text fg={primaryTextColor}>dir {agent.cwd}</text>
                     <text fg={stateColor(agent.state)}>
                       {placeholderStatusSymbol(agent.state, animationTick)} {stateLabel(agent.state)}
                     </text>
@@ -1103,56 +1161,54 @@ export function ChatDeckApp() {
             }}
           >
             {visibleMessages.length ? (
-              visibleMessages.map((message, index) => (
-                <box
-                  key={message.id}
-                  style={{
-                    width: "100%",
-                    flexDirection: "row",
-                    marginBottom: index === visibleMessages.length - 1 ? 0 : 1,
-                  }}
-                >
+              visibleMessages.map((message, index) => {
+                const color = messageColor(message.role, primaryTextColor);
+                const textColorProps = color ? { fg: color } : {};
+                const content =
+                  message.role === "user" &&
+                  selectedAgent &&
+                  selectedAgent.awaitingResult &&
+                  index === visibleMessages.length - 1
+                    ? `${SPINNER_FRAMES[animationTick % SPINNER_FRAMES.length]} ${message.content}`
+                    : message.content;
+
+                return (
                   <box
+                    key={message.id}
                     style={{
-                      width: MESSAGE_PREFIX_WIDTH,
+                      width: "100%",
                       flexDirection: "row",
-                      backgroundColor: "transparent",
+                      marginBottom: index === visibleMessages.length - 1 ? 0 : 1,
                     }}
-                  >
-                    <text
-                      fg={
-                        message.role === "user"
-                          ? "#7FB3FF"
-                          : message.role === "error"
-                            ? "#FF6F6F"
-                            : message.role === "system"
-                              ? "#B3BFCC"
-                              : "#EFF1F5"
-                      }
                     >
-                      {message.role === "user" ? "> " : "  "}
-                    </text>
+                      <box
+                        style={{
+                          width: MESSAGE_PREFIX_WIDTH,
+                          flexDirection: "row",
+                          backgroundColor: "transparent",
+                        }}
+                      >
+                      <text {...textColorProps}>{message.role === "user" ? "• " : "  "}</text>
+                    </box>
+                    <box style={{ flexGrow: 1, flexDirection: "column", backgroundColor: "transparent" }}>
+                      {message.role === "assistant" ? (
+                        <markdown
+                          content={content}
+                          syntaxStyle={messageMarkdownStyle}
+                          conceal
+                          style={{ width: "100%" }}
+                        />
+                      ) : (
+                        splitMessageLines(content).map((line, lineIndex) => (
+                          <text key={`${message.id}-line-${lineIndex}`} {...textColorProps}>
+                            {line || " "}
+                          </text>
+                        ))
+                      )}
+                    </box>
                   </box>
-                  <text
-                    fg={
-                      message.role === "user"
-                        ? "#7FB3FF"
-                        : message.role === "error"
-                          ? "#FF6F6F"
-                          : message.role === "system"
-                            ? "#B3BFCC"
-                            : "#EFF1F5"
-                    }
-                  >
-                    {message.role === "user" &&
-                    selectedAgent &&
-                    selectedAgent.awaitingResult &&
-                    index === visibleMessages.length - 1
-                      ? `${SPINNER_FRAMES[animationTick % SPINNER_FRAMES.length]} ${message.content}`
-                      : message.content}
-                  </text>
-                </box>
-              ))
+                );
+              })
             ) : (
               <text fg="#8293A6">
                 {selectedAgent ? `@${selectedAgent.name} selected. Waiting for the next agent result...` : "Controller is ready."}
@@ -1201,7 +1257,7 @@ export function ChatDeckApp() {
                 width={Math.max(10, width - sidebarWidth - 8)}
                 backgroundColor="transparent"
                 focusedBackgroundColor="transparent"
-                textColor="#EFF1F5"
+                textColor={primaryTextColor}
                 cursorColor="#7FE5B2"
               />
             </box>

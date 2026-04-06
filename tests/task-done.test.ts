@@ -8,7 +8,8 @@ describe("task done protocol helpers", () => {
 
     expect(prompt).toContain("What kind of project is this?");
     expect(prompt).toContain("<TASK_DONE>");
-    expect(prompt).toContain("do not add any separate summary before or after it");
+    expect(prompt).toContain('"display"');
+    expect(prompt).toContain("escape line breaks inside strings as \\\\n");
     expect(prompt).toContain("same language as the user's message");
   });
 
@@ -39,6 +40,17 @@ describe("task done protocol helpers", () => {
         result: "",
         next: "Run the integration tests next.",
       }),
-    ).toBe("Completed the initial review.\nRun the integration tests next.");
+    ).toBe("Completed the initial review.\n\nRun the integration tests next.");
+  });
+
+  test("prefers formatted display content when present", () => {
+    expect(
+      formatTaskDone({
+        display: "Prepared the demo directories:\n\n- /tmp/chat-deck-codex-demo\n- /tmp/chat-deck-claude-demo",
+        summary: "ignore",
+        result: "ignore",
+        next: "ignore",
+      }),
+    ).toBe("Prepared the demo directories:\n\n- /tmp/chat-deck-codex-demo\n- /tmp/chat-deck-claude-demo");
   });
 });

@@ -212,6 +212,7 @@ export function publishDoneEventFromPayload(
     cwd: firstString(payload, ["cwd"]),
     sessionId: firstString(payload, ["session_id", "session-id", "thread-id", "thread_id", "sessionId"]),
     type: "task_done",
+    display: parsed.payload.display?.trim() ?? "",
     summary: parsed.payload.summary?.trim() ?? "",
     result: parsed.payload.result?.trim() ?? "",
     next: parsed.payload.next?.trim() ?? "",

@@ -82,13 +82,15 @@ describe("worker runtime callbacks", () => {
       cwd: "/tmp/demo",
       event: {
         output: {
-          final: 'Done. <TASK_DONE>{"summary":"Completed the task.","result":"Created the plan.","next":"Run the command."}</TASK_DONE>',
+          final:
+            'Done. <TASK_DONE>{"display":"Completed the task.\\n\\n- Created the plan","summary":"Completed the task.","result":"Created the plan.","next":"Run the command."}</TASK_DONE>',
         },
       },
     });
 
     expect(event).not.toBeNull();
     expect(event?.tool).toBe("copilot");
+    expect(event?.display).toBe("Completed the task.\n\n- Created the plan");
     expect(event?.summary).toBe("Completed the task.");
     expect(event?.result).toBe("Created the plan.");
     expect(event?.next).toBe("Run the command.");
@@ -99,11 +101,12 @@ describe("worker runtime callbacks", () => {
       cwd: "/tmp/demo",
       "thread-id": "thread-123",
       "last-assistant-message":
-        'Done. <TASK_DONE>{"summary":"Finished the review.","result":"Found the root cause.","next":"Apply the patch."}</TASK_DONE>',
+        'Done. <TASK_DONE>{"display":"Finished the review.\\n\\n- Found the root cause","summary":"Finished the review.","result":"Found the root cause.","next":"Apply the patch."}</TASK_DONE>',
     });
 
     expect(event).not.toBeNull();
     expect(event?.agentId).toBe("agent-3");
+    expect(event?.display).toBe("Finished the review.\n\n- Found the root cause");
     expect(event?.summary).toBe("Finished the review.");
     expect(event?.result).toBe("Found the root cause.");
     expect(event?.next).toBe("Apply the patch.");
