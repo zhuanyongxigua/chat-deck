@@ -31,6 +31,7 @@ function makeAgent(overrides: Partial<AgentRecord> = {}): AgentRecord {
     unreadCount: 0,
     awaitingResult: false,
     needsAttention: false,
+    statusDetail: "",
     lastSummary: "",
     messages: [makeMessage()],
     createdAt: 0,

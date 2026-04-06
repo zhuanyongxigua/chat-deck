@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
-import { CliRenderEvents, SyntaxStyle, TextAttributes, type KeyEvent, type MouseEvent } from "@opentui/core";
+import { CliRenderEvents, MouseButton, SyntaxStyle, TextAttributes, type KeyEvent, type MouseEvent } from "@opentui/core";
 import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { applyAgentSelection } from "./lib/agent-state";
+import { applyAgentPaneExit, applyAgentSelection } from "./lib/agent-state";
+import { detectBlockedPrompt } from "./lib/agent-prompts";
 import { loadAppState, saveAppState, type PersistedAppState, type ViewState } from "./lib/app-state";
 import { copyTextToClipboard } from "./lib/clipboard";
+import { findCodexPromptSubmission, waitForCodexPromptSubmission } from "./lib/codex-session";
 import { looksLikeCodexTranscript } from "./lib/codex-ui";
 import { interpretControllerMessage } from "./lib/controller";
 import { HISTORY_LIMIT, loadHistory, rememberHistory } from "./lib/history";
@@ -25,13 +27,19 @@ import {
   isTmuxAvailable,
   sendKeysToTmux,
   sendTextToTmux,
+  waitForTmuxCliReady,
 } from "./lib/tmux";
 import { cleanupRuntimeFiles, prepareWorkerLaunchCommand } from "./lib/worker-runtime";
 import type { AgentRecord, AgentState, AgentTool, ChatMessage, RouterResult } from "./lib/types";
 
 const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"];
 const MESSAGE_SCROLLBOX_ID = "message-scrollbox";
+const COMPOSER_INPUT_ID = "composer-input";
 const MESSAGE_PREFIX_WIDTH = 2;
+const CODEX_SLOW_START_NOTICE_PREFIX = "Codex is still starting slowly, so Chat Deck skipped the local confirmation check for @";
+const FIRST_MESSAGE_WARMUP_MS: Partial<Record<AgentTool, number>> = {
+  copilot: 1_200,
+};
 const COMMAND_SPECS: Array<{ command: string; description: string }> = [
   { command: "/help", description: "Show available commands" },
   { command: "/agents", description: "List current agents" },
@@ -47,6 +55,15 @@ function createMessage(role: ChatMessage["role"], content: string): ChatMessage 
     content,
     createdAt: Date.now(),
   };
+}
+
+function codexSlowStartNoticeAgentName(text: string): string | null {
+  if (!text.startsWith(CODEX_SLOW_START_NOTICE_PREFIX)) {
+    return null;
+  }
+  const suffix = text.slice(CODEX_SLOW_START_NOTICE_PREFIX.length);
+  const agentName = suffix.split(/[.\s]/, 1)[0]?.trim();
+  return agentName || null;
 }
 
 function clientLabel(tool: AgentTool): string {
@@ -127,10 +144,6 @@ function stateColor(state: AgentState): string {
     default:
       return "#B3BFCC";
   }
-}
-
-function borderColor(active: boolean): string {
-  return active ? "#3E7F5D" : "#7FB3FF";
 }
 
 function placeholderStatusSymbol(state: AgentState, tick: number): string {
@@ -220,9 +233,7 @@ export function ChatDeckApp() {
   const { width, height } = useTerminalDimensions();
   const [agents, setAgents] = useState<AgentRecord[]>(() => initialAppState?.agents ?? []);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(() => initialAppState?.selectedAgentId ?? null);
-  const [controllerMessages, setControllerMessages] = useState<ChatMessage[]>(
-    () => initialAppState?.controllerMessages ?? initialControllerMessages(),
-  );
+  const [controllerMessages, setControllerMessages] = useState<ChatMessage[]>(() => initialControllerMessages());
   const [inputValue, setInputValue] = useState(() => {
     const selected = initialAppState?.selectedAgentId ?? null;
     const viewKey = messageViewKey(selected);
@@ -249,6 +260,7 @@ export function ChatDeckApp() {
   const clipboardWarningShownRef = useRef(false);
   const lastCopiedSelectionRef = useRef("");
   const pendingSelectionRef = useRef("");
+  const footerTextRef = useRef(footerText);
   const selectionCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectionClearTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const controllerMessagesRef = useRef(controllerMessages);
@@ -274,6 +286,10 @@ export function ChatDeckApp() {
   useEffect(() => {
     historyRef.current = history;
   }, [history]);
+
+  useEffect(() => {
+    footerTextRef.current = footerText;
+  }, [footerText]);
 
   useEffect(() => {
     controllerMessagesRef.current = controllerMessages;
@@ -456,6 +472,24 @@ export function ChatDeckApp() {
     return renderable as unknown as { scrollTop: number };
   }
 
+  function focusComposerInput() {
+    const renderable = renderer.root.findDescendantById(COMPOSER_INPUT_ID);
+    if (!renderable) {
+      return;
+    }
+    renderable.focus();
+  }
+
+  function handleMessageAreaMouseUp(event: MouseEvent) {
+    if (event.button !== MouseButton.LEFT || event.isDragging) {
+      return;
+    }
+    if (renderer.getSelection()?.getSelectedText()) {
+      return;
+    }
+    focusComposerInput();
+  }
+
   function getViewState(viewKey: string): ViewState {
     const existing = viewStatesRef.current[viewKey];
     if (existing) {
@@ -531,11 +565,35 @@ export function ChatDeckApp() {
     const updates = await Promise.all(
       current.map(async (agent) => {
         const paneState = await getTmuxPaneState(agent.sessionName);
-        return { agentId: agent.id, paneState };
+        const snapshot =
+          paneState.sessionExists && !paneState.paneDead ? (await captureTmuxSnapshot(agent.sessionName, 80)).join("\n") : "";
+        return {
+          agentId: agent.id,
+          paneState,
+          blockReason: snapshot ? detectBlockedPrompt(agent.tool, snapshot) : null,
+        };
       }),
     );
     const { events, nextOffset } = readInboxEvents(inboxOffsetRef.current);
     inboxOffsetRef.current = nextOffset;
+
+    const codexSlowStartAgentName = codexSlowStartNoticeAgentName(footerTextRef.current);
+    if (codexSlowStartAgentName) {
+      const targetAgent = current.find((agent) => agent.name === codexSlowStartAgentName && agent.tool === "codex");
+      const latestUserMessage = [...(targetAgent?.messages ?? [])].reverse().find((message) => message.role === "user");
+      const confirmedSubmission =
+        targetAgent && latestUserMessage
+          ? findCodexPromptSubmission(targetAgent.cwd, latestUserMessage.content, latestUserMessage.createdAt - 1_000)
+          : null;
+      const taskDoneEvent = targetAgent
+        ? events.some((event) => event.agentId === targetAgent.id && event.type === "task_done")
+        : false;
+
+      if (confirmedSubmission || taskDoneEvent) {
+        setFooterText("");
+        setFooterError(false);
+      }
+    }
 
     setAgents((previous) =>
       previous.map((agent) => {
@@ -552,13 +610,24 @@ export function ChatDeckApp() {
             state: "error",
             awaitingResult: false,
             needsAttention: true,
+            statusDetail: "",
           };
         } else if (update.paneState.paneDead) {
+          next = applyAgentPaneExit(next, update.paneState.exitStatus);
+        } else if (update.blockReason) {
           next = {
             ...next,
-            state: update.paneState.exitStatus && update.paneState.exitStatus !== 0 ? "error" : "completed",
+            state: "blocked",
             awaitingResult: false,
-            needsAttention: Boolean(update.paneState.exitStatus && update.paneState.exitStatus !== 0),
+            needsAttention: true,
+            statusDetail: update.blockReason,
+          };
+        } else if (next.state === "blocked" && next.statusDetail) {
+          next = {
+            ...next,
+            state: next.awaitingResult ? "working" : "idle",
+            needsAttention: false,
+            statusDetail: "",
           };
         }
 
@@ -576,6 +645,7 @@ export function ChatDeckApp() {
               state: "completed",
               awaitingResult: false,
               needsAttention: false,
+              statusDetail: "",
               lastSummary: formatted,
               messages: [...next.messages, createMessage("assistant", formatted)],
               unreadCount: selectedAgentIdRef.current === agent.id ? 0 : next.unreadCount + 1,
@@ -589,7 +659,6 @@ export function ChatDeckApp() {
   }
 
   function writeController(text: string, role: ChatMessage["role"] = "system") {
-    setControllerMessages((previous) => [...previous, createMessage(role, text)]);
     setFooterText(text);
     setFooterError(role === "error" || looksLikeError(text));
   }
@@ -663,6 +732,7 @@ export function ChatDeckApp() {
       unreadCount: 0,
       awaitingResult: false,
       needsAttention: false,
+      statusDetail: "",
       lastSummary: "",
       messages: [],
       createdAt: Date.now(),
@@ -764,13 +834,8 @@ export function ChatDeckApp() {
       return;
     }
 
-    try {
-      await sendTextToTmux(target.sessionName, buildTaskDonePrompt(message));
-    } catch (error) {
-      setFooterText((error as Error).message);
-      setFooterError(true);
-      return;
-    }
+    const userMessage = createMessage("user", message);
+    let postSendNotice = "";
 
     setAgents((previous) =>
       previous.map((agent) => {
@@ -782,12 +847,71 @@ export function ChatDeckApp() {
           state: "working",
           awaitingResult: true,
           needsAttention: false,
-          messages: [...agent.messages, createMessage("user", message)],
+          statusDetail: "",
+          messages: [...agent.messages, userMessage],
           unreadCount: selectedAgentIdRef.current === agent.id ? 0 : agent.unreadCount + 1,
         };
       }),
     );
-    setFooterText("");
+
+    try {
+      const firstUserMessage = !target.messages.some((entry) => entry.role === "user");
+      const startupWarmup = FIRST_MESSAGE_WARMUP_MS[target.tool] ?? 0;
+      if (firstUserMessage && startupWarmup > 0) {
+        const remainingWarmup = Math.max(startupWarmup - (Date.now() - target.createdAt), 0);
+        if (remainingWarmup > 0) {
+          setFooterText(`Waiting for @${target.name} to finish starting before sending the first message...`);
+          setFooterError(false);
+          await new Promise((resolve) => setTimeout(resolve, remainingWarmup));
+        }
+        await waitForTmuxCliReady(target.sessionName);
+      }
+      if (target.tool === "codex" && firstUserMessage) {
+        await waitForTmuxCliReady(target.sessionName);
+
+        const promptSentAtMs = Date.now();
+        await sendTextToTmux(target.sessionName, message);
+
+        let submitted = await waitForCodexPromptSubmission(target.cwd, message, promptSentAtMs - 1_000, {
+          timeoutMs: 1_500,
+        });
+
+        for (let attempt = 0; !submitted && attempt < 3; attempt += 1) {
+          setFooterText(`Waiting for Codex to accept the first prompt, retrying Enter for @${target.name}...`);
+          setFooterError(false);
+          await sendKeysToTmux(target.sessionName, ["C-m"]);
+          submitted = await waitForCodexPromptSubmission(target.cwd, message, promptSentAtMs - 1_000, {
+            timeoutMs: 1_200,
+          });
+        }
+
+        if (!submitted) {
+          const paneState = await getTmuxPaneState(target.sessionName);
+          if (!paneState.sessionExists) {
+            throw new Error(`tmux session is gone: ${target.sessionName}`);
+          }
+          if (paneState.paneDead) {
+            throw new Error(`tmux pane for @${target.name} exited before Codex confirmed the first prompt.`);
+          }
+
+          const snapshot = (await captureTmuxSnapshot(target.sessionName, 80)).join("\n");
+          const blockReason = snapshot ? detectBlockedPrompt("codex", snapshot) : null;
+          if (blockReason) {
+            throw new Error(blockReason);
+          }
+
+          postSendNotice = `Codex is still starting slowly, so Chat Deck skipped the local confirmation check for @${target.name} and is continuing to wait for the result.`;
+        }
+      } else {
+        await sendTextToTmux(target.sessionName, target.tool === "codex" ? message : buildTaskDonePrompt(message));
+      }
+    } catch (error) {
+      setFooterText((error as Error).message);
+      setFooterError(true);
+      return;
+    }
+
+    setFooterText(postSendNotice);
     setFooterError(false);
   }
 
@@ -1024,13 +1148,25 @@ export function ChatDeckApp() {
   const sidebarWidth = sidebarVisible
     ? clampSidebarWidth(sidebarWidthOverride ?? Math.floor(width * 0.32), width)
     : 0;
+  const selectedAgentNotice = selectedAgent?.state === "blocked" ? selectedAgent.statusDetail : "";
+  const globalBlockedAgent = agents.find((agent) => agent.state === "blocked" && agent.statusDetail);
+  const blockedAgentNotice =
+    selectedAgentNotice || (globalBlockedAgent ? `@${globalBlockedAgent.name}: ${globalBlockedAgent.statusDetail}` : "");
   const statusBarText = agents.length
     ? agents
         .map((agent) => `${agent.name}:${stateToken(agent.state)}${agent.unreadCount ? "*" : ""}${agent.needsAttention ? "!" : ""}`)
         .join(" | ")
     : "No agents running";
-  const footerDisplay = commandMatches.length ? commandFooter(commandMatches, commandIndex % commandMatches.length) : footerText;
-  const footerColor = commandMatches.length ? "#B3BFCC" : footerError ? "#FF6F6F" : "#D1D8E0";
+  const footerDisplay = commandMatches.length
+    ? commandFooter(commandMatches, commandIndex % commandMatches.length)
+    : blockedAgentNotice || footerText;
+  const footerColor = commandMatches.length
+    ? "#B3BFCC"
+    : blockedAgentNotice
+      ? "#FFB56B"
+      : footerError
+        ? "#FF6F6F"
+        : "#D1D8E0";
 
   return (
     <box style={{ width: "100%", height: "100%", flexDirection: "column", backgroundColor: "transparent" }}>
@@ -1056,7 +1192,7 @@ export function ChatDeckApp() {
             width: "100%",
             height: 1,
             border: ["top"],
-            borderStyle: "heavy",
+            borderStyle: "single",
             borderColor: "#2A3E52",
             backgroundColor: "transparent",
           }}
@@ -1088,13 +1224,13 @@ export function ChatDeckApp() {
                       width: "100%",
                       border: true,
                       borderStyle: "rounded",
-                      borderColor: borderColor(agent.id === selectedAgentId),
+                      borderColor: agent.id === selectedAgentId ? "#3E7F5D" : primaryTextColor,
                       paddingLeft: 1,
                       paddingRight: 1,
                       paddingTop: 0,
                       paddingBottom: 0,
                       marginTop: 0,
-                      marginBottom: 1,
+                      marginBottom: 0,
                       flexDirection: "column",
                     }}
                   >
@@ -1123,7 +1259,7 @@ export function ChatDeckApp() {
               width: 1,
               height: "100%",
               border: ["left"],
-              borderStyle: "heavy",
+              borderStyle: "single",
               borderColor: dividerActive ? "#7FB3FF" : "#2A3E52",
             }}
             onMouseOver={() => {
@@ -1151,6 +1287,7 @@ export function ChatDeckApp() {
             id={MESSAGE_SCROLLBOX_ID}
             stickyScroll
             stickyStart="bottom"
+            onMouseUp={handleMessageAreaMouseUp}
             style={{
               width: "100%",
               height: "100%",
@@ -1222,7 +1359,7 @@ export function ChatDeckApp() {
                 width: "100%",
                 height: 3,
                 border: ["top", "bottom"],
-                borderStyle: "heavy",
+                borderStyle: "single",
                 borderColor: "#2A3E52",
                 backgroundColor: "transparent",
                 paddingLeft: 1,
@@ -1236,6 +1373,7 @@ export function ChatDeckApp() {
               </text>
               <box style={{ width: 1, height: 1, backgroundColor: "transparent" }} />
               <input
+                id={COMPOSER_INPUT_ID}
                 value={inputValue}
                 focused
                 placeholder={
@@ -1258,6 +1396,7 @@ export function ChatDeckApp() {
                 backgroundColor="transparent"
                 focusedBackgroundColor="transparent"
                 textColor={primaryTextColor}
+                focusedTextColor={primaryTextColor}
                 cursorColor="#7FE5B2"
               />
             </box>

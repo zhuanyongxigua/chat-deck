@@ -1,15 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { readInboxEvents } from "../src/lib/inbox";
+import { agentRuntimeDir } from "../src/lib/paths";
 import { inboxFilePath } from "../src/lib/paths";
 import { prepareWorkerLaunchCommand, publishDoneEventFromPayload } from "../src/lib/worker-runtime";
 
 describe("worker runtime callbacks", () => {
   let tempHome = "";
   const previousHome = process.env.CHAT_DECK_HOME;
+  const previousUserHome = process.env.HOME;
 
   beforeEach(() => {
     tempHome = mkdtempSync(join(tmpdir(), "chat-deck-runtime-"));
@@ -22,12 +24,17 @@ describe("worker runtime callbacks", () => {
     } else {
       process.env.CHAT_DECK_HOME = previousHome;
     }
+    if (previousUserHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousUserHome;
+    }
     if (tempHome) {
       rmSync(tempHome, { recursive: true, force: true });
     }
   });
 
-  test("injects codex notify without touching global config", () => {
+  test("injects codex notify and disables approval prompts without touching global config", () => {
     const prepared = prepareWorkerLaunchCommand("codex", "agent-1", "/tmp/demo", ["codex", "--model", "gpt-5"]);
 
     expect(prepared.runtimeFiles).toEqual([]);
@@ -35,12 +42,21 @@ describe("worker runtime callbacks", () => {
       "codex",
       "--model",
       "gpt-5",
+      "-a",
+      "never",
+      "-c",
+      "check_for_update_on_startup=false",
+      "-c",
+      'projects={ "/tmp/demo" = { trust_level = "trusted" } }',
+      "-c",
+      expect.stringContaining('developer_instructions="'),
       "-c",
       expect.stringContaining("notify=["),
     ]);
-    expect(prepared.command[4]).toContain("publish-done");
-    expect(prepared.command[4]).toContain("\"codex\"");
-    expect(prepared.command[4]).toContain("\"agent-1\"");
+    expect(prepared.command[10]).toContain("TASK_DONE");
+    expect(prepared.command[12]).toContain("publish-done");
+    expect(prepared.command[12]).toContain("\"codex\"");
+    expect(prepared.command[12]).toContain("\"agent-1\"");
   });
 
 
@@ -62,12 +78,91 @@ describe("worker runtime callbacks", () => {
     expect(hooks).toContain("agent-5");
   });
 
+  test("reads TASK_DONE from a Copilot transcript path in nested hook payloads", () => {
+    const transcriptDir = join(tempHome, ".copilot", "session-state", "session-1");
+    const transcriptPath = join(transcriptDir, "events.jsonl");
+    mkdirSync(transcriptDir, { recursive: true });
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: "session.start",
+          data: {
+            sessionId: "session-1",
+            context: { cwd: "/tmp/wrapper" },
+          },
+        }),
+        JSON.stringify({
+          type: "assistant.message",
+          data: {
+            content:
+              'Done. <TASK_DONE>{"display":"Completed from transcript.","summary":"Completed from transcript.","result":"Parsed the transcript.","next":"Move on."}</TASK_DONE>',
+          },
+        }),
+      ].join("\n"),
+      "utf8",
+    );
+
+    const event = publishDoneEventFromPayload("copilot", "agent-7", {
+      input: {
+        cwd: "/tmp/demo",
+        sessionId: "session-1",
+        transcriptPath,
+      },
+    });
+
+    expect(event).not.toBeNull();
+    expect(event?.tool).toBe("copilot");
+    expect(event?.cwd).toBe("/tmp/demo");
+    expect(event?.sessionId).toBe("session-1");
+    expect(event?.display).toBe("Completed from transcript.");
+    expect(event?.result).toBe("Parsed the transcript.");
+  });
+
+  test("falls back to the latest Copilot transcript for the current agent", () => {
+    process.env.HOME = tempHome;
+    prepareWorkerLaunchCommand("copilot", "agent-9", "/tmp/demo", ["copilot"]);
+
+    const wrapperDir = join(agentRuntimeDir("agent-9"), "copilot-wrapper");
+    const transcriptDir = join(tempHome, ".copilot", "session-state", "session-9");
+    const transcriptPath = join(transcriptDir, "events.jsonl");
+    mkdirSync(transcriptDir, { recursive: true });
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: "session.start",
+          data: {
+            sessionId: "session-9",
+            context: { cwd: wrapperDir },
+          },
+        }),
+        JSON.stringify({
+          type: "assistant.message",
+          data: {
+            content:
+              'Done. <TASK_DONE>{"display":"Recovered from fallback transcript.","summary":"Recovered from fallback transcript.","result":"Matched the wrapper session.","next":"Continue working."}</TASK_DONE>',
+          },
+        }),
+      ].join("\n"),
+      "utf8",
+    );
+
+    const event = publishDoneEventFromPayload("copilot", "agent-9", {});
+
+    expect(event).not.toBeNull();
+    expect(event?.tool).toBe("copilot");
+    expect(event?.sessionId).toBe("session-9");
+    expect(event?.display).toBe("Recovered from fallback transcript.");
+    expect(event?.result).toBe("Matched the wrapper session.");
+  });
+
   test("writes a claude settings file with a Stop hook callback", () => {
     const prepared = prepareWorkerLaunchCommand("claude", "agent-2", "/tmp/demo", ["claude", "--model", "sonnet"]);
 
     expect(prepared.runtimeFiles).toHaveLength(1);
     expect(existsSync(prepared.runtimeFiles[0]!)).toBe(true);
-    expect(prepared.command).toEqual(["claude", "--model", "sonnet", "--settings", prepared.runtimeFiles[0]!]);
+    expect(prepared.command).toEqual(["env", "DISABLE_AUTOUPDATER=1", "claude", "--model", "sonnet", "--settings", prepared.runtimeFiles[0]!]);
 
     const settings = readFileSync(prepared.runtimeFiles[0]!, "utf8");
     expect(settings).toContain("\"Stop\"");

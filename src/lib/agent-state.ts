@@ -1,5 +1,9 @@
 import type { AgentRecord } from "./types";
 
+function hasAssistantResult(agent: AgentRecord): boolean {
+  return agent.lastSummary.trim().length > 0 || agent.messages.some((message) => message.role === "assistant");
+}
+
 export function applyAgentSelection(
   agents: AgentRecord[],
   previousSelectedId: string | null,
@@ -28,4 +32,34 @@ export function applyAgentSelection(
 
     return next;
   });
+}
+
+export function applyAgentPaneExit(agent: AgentRecord, exitStatus: number | null): AgentRecord {
+  if (exitStatus && exitStatus !== 0) {
+    return {
+      ...agent,
+      state: "error",
+      awaitingResult: false,
+      needsAttention: true,
+      statusDetail: "",
+    };
+  }
+
+  if (hasAssistantResult(agent)) {
+    return {
+      ...agent,
+      state: "completed",
+      awaitingResult: false,
+      needsAttention: false,
+      statusDetail: "",
+    };
+  }
+
+  return {
+    ...agent,
+    state: "error",
+    awaitingResult: false,
+    needsAttention: true,
+    statusDetail: "",
+  };
 }

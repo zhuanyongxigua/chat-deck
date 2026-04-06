@@ -43,7 +43,7 @@ function isAgentRecord(value: unknown): value is AgentRecord {
   return (
     typeof candidate.id === "string" &&
     typeof candidate.name === "string" &&
-    (candidate.tool === "claude" || candidate.tool === "codex") &&
+    (candidate.tool === "claude" || candidate.tool === "codex" || candidate.tool === "copilot") &&
     typeof candidate.cwd === "string" &&
     (typeof candidate.branch === "string" || candidate.branch === null) &&
     typeof candidate.sessionName === "string" &&
@@ -64,6 +64,13 @@ function isAgentRecord(value: unknown): value is AgentRecord {
     candidate.messages.every(isChatMessage) &&
     typeof candidate.createdAt === "number"
   );
+}
+
+function sanitizeAgentRecord(agent: AgentRecord): AgentRecord {
+  return {
+    ...agent,
+    statusDetail: typeof agent.statusDetail === "string" ? agent.statusDetail : "",
+  };
 }
 
 function sanitizeViewStates(value: unknown): Record<string, ViewState> {
@@ -93,7 +100,7 @@ export function loadAppState(): PersistedAppState | null {
       return null;
     }
 
-    const agents = Array.isArray(raw.agents) ? raw.agents.filter(isAgentRecord) : [];
+    const agents = Array.isArray(raw.agents) ? raw.agents.filter(isAgentRecord).map(sanitizeAgentRecord) : [];
     const controllerMessages = Array.isArray(raw.controllerMessages)
       ? raw.controllerMessages.filter(isChatMessage)
       : [];

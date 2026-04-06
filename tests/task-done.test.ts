@@ -11,6 +11,7 @@ describe("task done protocol helpers", () => {
     expect(prompt).toContain('"display"');
     expect(prompt).toContain("escape line breaks inside strings as \\\\n");
     expect(prompt).toContain("same language as the user's message");
+    expect(prompt).toContain("make reasonable assumptions and continue autonomously");
   });
 
   test("parses the last valid TASK_DONE block in a snapshot", () => {

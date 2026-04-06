@@ -14,7 +14,10 @@ export interface PaneState {
   sessionExists: boolean;
   paneDead: boolean;
   exitStatus: number | null;
+  currentCommand: string | null;
 }
+
+const SHELL_COMMANDS = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "env", "login"]);
 
 async function runCommand(
   binary: string,
@@ -91,7 +94,7 @@ export async function tmuxHasSession(sessionName: string): Promise<boolean> {
 export async function sendTextToTmux(sessionName: string, text: string): Promise<void> {
   if (text) {
     await runCommand("tmux", ["send-keys", "-t", sessionName, "-l", text]);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 120));
   }
   await runCommand("tmux", ["send-keys", "-t", sessionName, "C-m"]);
 }
@@ -117,22 +120,64 @@ export async function captureTmuxSnapshot(sessionName: string, lines = 180): Pro
 
 export async function getTmuxPaneState(sessionName: string): Promise<PaneState> {
   if (!(await tmuxHasSession(sessionName))) {
-    return { sessionExists: false, paneDead: false, exitStatus: null };
+    return { sessionExists: false, paneDead: false, exitStatus: null, currentCommand: null };
   }
   const result = await runCommand(
     "tmux",
-    ["display-message", "-p", "-t", sessionName, "#{pane_dead} #{pane_dead_status}"],
+    ["display-message", "-p", "-t", sessionName, "#{pane_dead}\t#{pane_dead_status}\t#{pane_current_command}"],
     { check: false },
   );
   if (!result.ok) {
-    return { sessionExists: false, paneDead: false, exitStatus: null };
+    return { sessionExists: false, paneDead: false, exitStatus: null, currentCommand: null };
   }
-  const [deadToken, statusToken] = result.stdout.trim().split(/\s+/);
+  const [deadToken, statusToken, commandToken = ""] = result.stdout.trimEnd().split("\t");
   return {
     sessionExists: true,
     paneDead: deadToken === "1",
     exitStatus: statusToken ? Number.parseInt(statusToken, 10) || 0 : null,
+    currentCommand: commandToken.trim() || null,
   };
+}
+
+function normalizePaneCommand(value: string | null): string {
+  return (value ?? "")
+    .trim()
+    .split("/")
+    .at(-1)
+    ?.replace(/^-+/, "")
+    .toLowerCase() ?? "";
+}
+
+export function isTmuxCliReadyCommand(command: string | null): boolean {
+  const normalized = normalizePaneCommand(command);
+  return Boolean(normalized) && !SHELL_COMMANDS.has(normalized);
+}
+
+export async function waitForTmuxCliReady(
+  sessionName: string,
+  options: { timeoutMs?: number; pollMs?: number; settleMs?: number } = {},
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? 6_000;
+  const pollMs = options.pollMs ?? 100;
+  const settleMs = options.settleMs ?? 250;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const paneState = await getTmuxPaneState(sessionName);
+    if (!paneState.sessionExists) {
+      throw new Error(`tmux session is gone: ${sessionName}`);
+    }
+    if (paneState.paneDead) {
+      throw new Error(`tmux pane exited before it became ready: ${sessionName}`);
+    }
+    if (isTmuxCliReadyCommand(paneState.currentCommand)) {
+      if (settleMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, settleMs));
+      }
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
 }
 
 export function attachTmuxSession(sessionName: string): CommandResult {

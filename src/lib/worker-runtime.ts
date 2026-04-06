@@ -1,10 +1,12 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { appendInboxEvent, type InboxEvent } from "./inbox";
 import { agentRuntimeDir } from "./paths";
 import { parseTaskDone } from "./task-done";
+import { taskDoneProtocolInstructions } from "./task-done";
 import type { AgentTool } from "./types";
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -28,6 +30,27 @@ function firstString(payload: Record<string, unknown>, keys: string[]): string {
       return value;
     }
   }
+  return "";
+}
+
+function firstNestedString(value: unknown, keys: string[]): string {
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+
+  for (const [key, nestedValue] of Object.entries(value)) {
+    if (keys.includes(key) && typeof nestedValue === "string" && nestedValue.trim()) {
+      return nestedValue;
+    }
+  }
+
+  for (const nestedValue of Object.values(value)) {
+    const found = firstNestedString(nestedValue, keys);
+    if (found) {
+      return found;
+    }
+  }
+
   return "";
 }
 
@@ -77,6 +100,98 @@ function findTaskDoneMessage(payload: Record<string, unknown>): string {
   return direct;
 }
 
+function readLastTaskDoneFromCopilotTranscript(
+  transcriptPath: string,
+): { rawMessage: string; sessionId: string; wrapperCwd: string } | null {
+  try {
+    const file = readFileSync(transcriptPath, "utf8");
+    let rawMessage = "";
+    let sessionId = "";
+    let wrapperCwd = "";
+
+    for (const line of file.split(/\r?\n/)) {
+      const text = line.trim();
+      if (!text) {
+        continue;
+      }
+
+      let entry: Record<string, unknown>;
+      try {
+        entry = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+
+      if (!sessionId) {
+        sessionId = firstNestedString(entry, ["sessionId", "session_id", "session-id"]);
+      }
+
+      if (!wrapperCwd) {
+        wrapperCwd = firstNestedString(entry, ["cwd"]);
+      }
+
+      const candidate = firstNestedString(entry, ["content", "message", "assistantMessage", "output", "response"]);
+      if (candidate && parseTaskDone(candidate)) {
+        rawMessage = candidate;
+      }
+    }
+
+    if (!rawMessage) {
+      return null;
+    }
+
+    return {
+      rawMessage,
+      sessionId,
+      wrapperCwd,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function findLatestCopilotTranscriptPath(agentId: string): string {
+  const userHome = process.env.HOME || homedir();
+  const sessionStateDir = join(userHome, ".copilot", "session-state");
+  const expectedWrapperCwd = join(agentRuntimeDir(agentId), "copilot-wrapper");
+
+  try {
+    const entries = readdirSync(sessionStateDir, { withFileTypes: true });
+    let latestPath = "";
+    let latestMtime = -1;
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      const transcriptPath = join(sessionStateDir, entry.name, "events.jsonl");
+      if (!existsSync(transcriptPath)) {
+        continue;
+      }
+
+      const transcript = readLastTaskDoneFromCopilotTranscript(transcriptPath);
+      if (!transcript) {
+        continue;
+      }
+
+      if (expectedWrapperCwd && transcript.wrapperCwd && transcript.wrapperCwd !== expectedWrapperCwd) {
+        continue;
+      }
+
+      const mtimeMs = statSync(transcriptPath).mtimeMs;
+      if (mtimeMs > latestMtime) {
+        latestMtime = mtimeMs;
+        latestPath = transcriptPath;
+      }
+    }
+
+    return latestPath;
+  } catch {
+    return "";
+  }
+}
+
 async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) {
     return "";
@@ -94,6 +209,11 @@ export interface PreparedLaunchCommand {
   cwd?: string;
 }
 
+function codexProjectTrustOverride(cwd: string): string {
+  const trustPath = existsSync(cwd) ? realpathSync(cwd) : cwd;
+  return `projects={ ${JSON.stringify(trustPath)} = { trust_level = "trusted" } }`;
+}
+
 export function prepareWorkerLaunchCommand(
   tool: AgentTool,
   agentId: string,
@@ -104,7 +224,19 @@ export function prepareWorkerLaunchCommand(
 
   if (tool === "codex") {
     return {
-      command: [...base, "-c", `notify=${JSON.stringify(callbackCommandArgs(tool, agentId))}`],
+      command: [
+        ...base,
+        "-a",
+        "never",
+        "-c",
+        "check_for_update_on_startup=false",
+        "-c",
+        codexProjectTrustOverride(cwd),
+        "-c",
+        `developer_instructions=${JSON.stringify(taskDoneProtocolInstructions())}`,
+        "-c",
+        `notify=${JSON.stringify(callbackCommandArgs(tool, agentId))}`,
+      ],
       runtimeFiles: [],
     };
   }
@@ -183,7 +315,7 @@ export function prepareWorkerLaunchCommand(
   );
 
   return {
-    command: [...base, "--settings", settingsPath],
+    command: ["env", "DISABLE_AUTOUPDATER=1", ...base, "--settings", settingsPath],
     runtimeFiles: [settingsPath],
   };
 }
@@ -199,8 +331,23 @@ export function publishDoneEventFromPayload(
   agentId: string,
   payload: Record<string, unknown>,
 ): InboxEvent | null {
-  const rawMessage = findTaskDoneMessage(payload);
-  const parsed = parseTaskDone(rawMessage);
+  let rawMessage = findTaskDoneMessage(payload);
+  let parsed = parseTaskDone(rawMessage);
+  let transcriptSessionId = "";
+
+  if (!parsed && tool === "copilot") {
+    const transcriptPath =
+      firstNestedString(payload, ["transcriptPath", "transcript_path", "transcript-path"]) || findLatestCopilotTranscriptPath(agentId);
+    if (transcriptPath) {
+      const transcript = readLastTaskDoneFromCopilotTranscript(transcriptPath);
+      if (transcript) {
+        rawMessage = transcript.rawMessage;
+        parsed = parseTaskDone(rawMessage);
+        transcriptSessionId = transcript.sessionId;
+      }
+    }
+  }
+
   if (!parsed) {
     return null;
   }
@@ -209,8 +356,9 @@ export function publishDoneEventFromPayload(
     ts: Date.now(),
     agentId,
     tool,
-    cwd: firstString(payload, ["cwd"]),
-    sessionId: firstString(payload, ["session_id", "session-id", "thread-id", "thread_id", "sessionId"]),
+    cwd: firstNestedString(payload, ["cwd"]),
+    sessionId:
+      firstNestedString(payload, ["session_id", "session-id", "thread-id", "thread_id", "sessionId"]) || transcriptSessionId,
     type: "task_done",
     display: parsed.payload.display?.trim() ?? "",
     summary: parsed.payload.summary?.trim() ?? "",

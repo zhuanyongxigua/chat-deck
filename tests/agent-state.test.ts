@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { applyAgentSelection } from "../src/lib/agent-state";
+import { applyAgentPaneExit, applyAgentSelection } from "../src/lib/agent-state";
 import type { AgentRecord } from "../src/lib/types";
 
 function makeAgent(overrides: Partial<AgentRecord>): AgentRecord {
@@ -17,6 +17,7 @@ function makeAgent(overrides: Partial<AgentRecord>): AgentRecord {
     unreadCount: 0,
     awaitingResult: false,
     needsAttention: false,
+    statusDetail: "",
     lastSummary: "",
     messages: [],
     createdAt: 0,
@@ -56,5 +57,45 @@ describe("applyAgentSelection", () => {
 
     expect(next[0]?.state).toBe("completed");
     expect(next[0]?.unreadCount).toBe(0);
+  });
+});
+
+describe("applyAgentPaneExit", () => {
+  test("keeps a clean exit with assistant output as completed", () => {
+    const next = applyAgentPaneExit(
+      makeAgent({
+        state: "working",
+        awaitingResult: true,
+        lastSummary: "Finished the task.",
+      }),
+      0,
+    );
+
+    expect(next.state).toBe("completed");
+    expect(next.awaitingResult).toBe(false);
+    expect(next.needsAttention).toBe(false);
+  });
+
+  test("treats a clean exit without assistant output as an error", () => {
+    const next = applyAgentPaneExit(
+      makeAgent({
+        state: "working",
+        awaitingResult: true,
+        messages: [{ id: "m1", role: "user", content: "hello", createdAt: 0 }],
+      }),
+      0,
+    );
+
+    expect(next.state).toBe("error");
+    expect(next.awaitingResult).toBe(false);
+    expect(next.needsAttention).toBe(true);
+  });
+
+  test("treats a non-zero exit status as an error", () => {
+    const next = applyAgentPaneExit(makeAgent({ state: "working", awaitingResult: true }), 2);
+
+    expect(next.state).toBe("error");
+    expect(next.awaitingResult).toBe(false);
+    expect(next.needsAttention).toBe(true);
   });
 });

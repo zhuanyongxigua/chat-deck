@@ -24,6 +24,7 @@ export interface AgentRecord {
   unreadCount: number;
   awaitingResult: boolean;
   needsAttention: boolean;
+  statusDetail: string;
   lastSummary: string;
   messages: ChatMessage[];
   createdAt: number;
