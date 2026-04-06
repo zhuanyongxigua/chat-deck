@@ -22,33 +22,6 @@ tmux 和终端 tab 很擅长管理终端本身。Chat Deck 位于它们之上，
 
 ---
 
-## 技术栈
-
-- Bun
-- TypeScript
-- OpenTUI
-- tmux
-
----
-
-## 当前这次 OpenTUI 重构
-
-这个项目已经从 Python/Textual 重构到了 OpenTUI。
-
-目前这版 TypeScript 重构保留了最核心的 Chat Deck 工作流：
-
-- 常驻侧边栏会话状态
-- 当前选中 agent 的聊天式主面板
-- 基于 tmux 的 Claude Code / Codex / Copilot CLI worker
-- `/new`、`/agents`、`/close`、`/attach`、`@agent-name ...`
-- `Ctrl+1..9`、`Ctrl+T`、`Ctrl+X`、`Ctrl+B`、`Esc`
-- 类似 `create a codex session in /path/to/project` 这样的自然语言建会话
-- 基于 `<TASK_DONE>...</TASK_DONE>` 的结构化完成总结解析
-
-一些 Python 版本里更重的语义回传能力，这次没有直接照搬，后续需要在 TypeScript 里重新补。
-
----
-
 ## 依赖前提
 
 你的机器上至少需要这些命令：
@@ -70,7 +43,17 @@ which copilot
 
 ## 安装
 
-clone 仓库后安装依赖：
+通过 npm 安装：
+
+```bash
+npm install -g chat-deck
+bun --version
+chat-deck
+```
+
+npm 包本身仍然要求本机已经安装 Bun。它只是一个很薄的启动器，真正的应用仍然通过 `bun` 运行。
+
+从源码安装：
 
 ```bash
 git clone git@github.com:zhuanyongxigua/chat-deck.git
@@ -84,13 +67,14 @@ bun install
 bun link
 ```
 
-如果以后通过 npm 发布或安装，运行时要求仍然一样：
+---
 
-```bash
-npm install -g chat-deck
-bun --version
-chat-deck
-```
+## 技术栈
+
+- Bun
+- TypeScript
+- OpenTUI
+- tmux
 
 ---
 

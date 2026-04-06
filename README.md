@@ -22,33 +22,6 @@ tmux and terminal tabs are great at managing terminals. Chat Deck sits one layer
 
 ---
 
-## Tech Stack
-
-- Bun
-- TypeScript
-- OpenTUI
-- tmux
-
----
-
-## Current OpenTUI Rewrite
-
-The project has been rewritten around OpenTUI instead of Python/Textual.
-
-The current TypeScript rewrite keeps the core Chat Deck workflow:
-
-- Persistent sidebar with session status
-- Chat-style main pane for the selected agent
-- tmux-backed Claude Code, Codex, and Copilot CLI workers
-- `/new`, `/agents`, `/close`, `/attach`, and `@agent-name ...`
-- `Ctrl+1..9`, `Ctrl+T`, `Ctrl+X`, `Ctrl+B`, `Esc`
-- Natural-language create requests such as `create a codex session in /path/to/project`
-- Structured completion parsing via `<TASK_DONE>...</TASK_DONE>`
-
-Some richer Python-era behaviors are intentionally not carried over yet and will need to be rebuilt natively in TypeScript.
-
----
-
 ## Prerequisites
 
 You need these tools on your machine:
@@ -70,7 +43,17 @@ Even if you install `chat-deck` from npm, Bun is still required at runtime. The 
 
 ## Install
 
-Clone the repository and install dependencies:
+Install from npm:
+
+```bash
+npm install -g chat-deck
+bun --version
+chat-deck
+```
+
+The published package still expects Bun to be installed locally. It is only a thin launcher; the actual app still starts through `bun`.
+
+Install from source:
 
 ```bash
 git clone git@github.com:zhuanyongxigua/chat-deck.git
@@ -84,13 +67,14 @@ If you want the `chat-deck` command available globally from this checkout:
 bun link
 ```
 
-If you publish or install the package from npm, the runtime expectation is still the same:
+---
 
-```bash
-npm install -g chat-deck
-bun --version
-chat-deck
-```
+## Tech Stack
+
+- Bun
+- TypeScript
+- OpenTUI
+- tmux
 
 ---
 
