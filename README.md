@@ -64,6 +64,8 @@ which copilot
 
 If you only want to inspect the code, `bun` and `zig` are the main requirements for the TUI itself. If you want real workers, `tmux` plus `claude` and/or `codex` must also be installed.
 
+Even if you install `chat-deck` from npm, Bun is still required at runtime. The npm package is only a thin launcher; the actual app still starts through `bun`.
+
 ---
 
 ## Install
@@ -80,6 +82,14 @@ If you want the `chat-deck` command available globally from this checkout:
 
 ```bash
 bun link
+```
+
+If you publish or install the package from npm, the runtime expectation is still the same:
+
+```bash
+npm install -g chat-deck
+bun --version
+chat-deck
 ```
 
 ---

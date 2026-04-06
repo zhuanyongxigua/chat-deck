@@ -1,6 +1,6 @@
 {
   "name": "chat-deck",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Chat-first multi-agent console for Claude Code and Codex, built with Bun, OpenTUI, and tmux.",
   "license": "MIT",
   "type": "module",

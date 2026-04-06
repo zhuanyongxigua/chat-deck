@@ -1,3 +1,31 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 
-import "../src/index.tsx";
+import { spawnSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const entrypoint = resolve(projectRoot, "src/index.tsx");
+const args = process.argv.slice(2);
+
+const bunCheck = spawnSync("bun", ["--version"], {
+  stdio: "ignore",
+});
+
+if (bunCheck.error || bunCheck.status !== 0) {
+  console.error("chat-deck requires Bun at runtime, even when installed from npm.");
+  console.error("Install Bun first: https://bun.sh");
+  process.exit(1);
+}
+
+const result = spawnSync("bun", [entrypoint, ...args], {
+  stdio: "inherit",
+  env: process.env,
+});
+
+if (result.error) {
+  console.error(result.error.message);
+  process.exit(1);
+}
+
+process.exit(result.status ?? 1);

@@ -153,6 +153,11 @@ export function isTmuxCliReadyCommand(command: string | null): boolean {
   return Boolean(normalized) && !SHELL_COMMANDS.has(normalized);
 }
 
+export function isCopilotPromptReadySnapshot(snapshot: string): boolean {
+  const normalized = snapshot.replace(/\r\n?/g, "\n");
+  return normalized.includes("Type @ to mention files") && normalized.includes("Remaining reqs.:");
+}
+
 export async function waitForTmuxCliReady(
   sessionName: string,
   options: { timeoutMs?: number; pollMs?: number; settleMs?: number } = {},

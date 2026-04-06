@@ -64,6 +64,8 @@ which copilot
 
 如果你只是想跑 TUI，本身最关键的是 `bun` 和 `zig`。如果你想跑真实 worker，还需要 `tmux`，以及 `claude` / `codex` 至少安装一个。
 
+即使你是通过 npm 安装 `chat-deck`，运行时也仍然需要 Bun。npm 包本身只是一个很薄的启动器，真正的应用仍然是通过 `bun` 启动的。
+
 ---
 
 ## 安装
@@ -80,6 +82,14 @@ bun install
 
 ```bash
 bun link
+```
+
+如果以后通过 npm 发布或安装，运行时要求仍然一样：
+
+```bash
+npm install -g chat-deck
+bun --version
+chat-deck
 ```
 
 ---

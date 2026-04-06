@@ -24,6 +24,7 @@ import {
   destroyTmuxSession,
   detectGitBranch,
   getTmuxPaneState,
+  isCopilotPromptReadySnapshot,
   isTmuxAvailable,
   sendKeysToTmux,
   sendTextToTmux,
@@ -110,23 +111,6 @@ function stateLabel(state: AgentState): string {
     return "ready";
   }
   return state;
-}
-
-function stateToken(state: AgentState): string {
-  switch (state) {
-    case "idle":
-      return "I";
-    case "working":
-      return "W";
-    case "completed":
-      return "C";
-    case "blocked":
-      return "B";
-    case "error":
-      return "E";
-    default:
-      return "?";
-  }
 }
 
 function stateColor(state: AgentState): string {
@@ -866,6 +850,38 @@ export function ChatDeckApp() {
         }
         await waitForTmuxCliReady(target.sessionName);
       }
+      if (target.tool === "copilot" && firstUserMessage) {
+        const deadline = Date.now() + 12_000;
+        let ready = false;
+
+        while (Date.now() < deadline) {
+          const paneState = await getTmuxPaneState(target.sessionName);
+          if (!paneState.sessionExists) {
+            throw new Error(`tmux session is gone: ${target.sessionName}`);
+          }
+          if (paneState.paneDead) {
+            throw new Error(`tmux pane for @${target.name} exited before Copilot became ready.`);
+          }
+
+          const snapshot = (await captureTmuxSnapshot(target.sessionName, 80)).join("\n");
+          const blockReason = detectBlockedPrompt("copilot", snapshot);
+          if (blockReason) {
+            throw new Error(blockReason);
+          }
+          if (isCopilotPromptReadySnapshot(snapshot)) {
+            ready = true;
+            break;
+          }
+
+          setFooterText(`Waiting for Copilot to finish loading before sending the first message to @${target.name}...`);
+          setFooterError(false);
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+
+        if (!ready) {
+          throw new Error(`Copilot did not finish loading its input prompt for @${target.name}. Attach with Ctrl+T to inspect it manually.`);
+        }
+      }
       if (target.tool === "codex" && firstUserMessage) {
         await waitForTmuxCliReady(target.sessionName);
 
@@ -1152,11 +1168,6 @@ export function ChatDeckApp() {
   const globalBlockedAgent = agents.find((agent) => agent.state === "blocked" && agent.statusDetail);
   const blockedAgentNotice =
     selectedAgentNotice || (globalBlockedAgent ? `@${globalBlockedAgent.name}: ${globalBlockedAgent.statusDetail}` : "");
-  const statusBarText = agents.length
-    ? agents
-        .map((agent) => `${agent.name}:${stateToken(agent.state)}${agent.unreadCount ? "*" : ""}${agent.needsAttention ? "!" : ""}`)
-        .join(" | ")
-    : "No agents running";
   const footerDisplay = commandMatches.length
     ? commandFooter(commandMatches, commandIndex % commandMatches.length)
     : blockedAgentNotice || footerText;
@@ -1182,9 +1193,25 @@ export function ChatDeckApp() {
             justifyContent: "space-between",
           }}
         >
-          <text fg={primaryTextColor} attributes={TextAttributes.BOLD}>
-            {statusBarText}
-          </text>
+          {agents.length ? (
+            <box style={{ flexDirection: "row", backgroundColor: "transparent" }}>
+              {agents.map((agent, index) => (
+                <box key={agent.id} style={{ flexDirection: "row", backgroundColor: "transparent" }}>
+                  <text fg={primaryTextColor}>
+                    {agent.name}
+                    {":"}
+                  </text>
+                  <text fg={stateColor(agent.state)}>
+                    {" "}
+                    {placeholderStatusSymbol(agent.state, animationTick)} {stateLabel(agent.state)}
+                  </text>
+                  {index < agents.length - 1 ? <text fg="#8293A6">  |  </text> : null}
+                </box>
+              ))}
+            </box>
+          ) : (
+            <text fg={primaryTextColor}>No agents running</text>
+          )}
           <text fg="#7FE5B2">{clipboardNotice}</text>
         </box>
         <box
